@@ -1,0 +1,163 @@
+{
+  "profiles": [
+    {
+      "id": "noob",
+      "name": "First-time user",
+      "targets": [
+        "web"
+      ],
+      "who": "Signed up this week. Uses the product from a phone and a laptop. Has never used software like it.",
+      "knows": "Knows their own work, not the app's words. Does not read help text, tooltips or long dialogs.",
+      "focus": [
+        "usability",
+        "copy",
+        "bug"
+      ],
+      "does": [
+        "Skims and clicks the first button that looks right, often the wrong one",
+        "Double-clicks buttons and submits forms twice",
+        "Uses Back and refresh in the middle of a flow, and leaves halfway to come back later",
+        "Opens the same page in two tabs",
+        "Types junk, pastes text with spaces, leaves fields empty, enters numbers like 50.5.5 or $50",
+        "Ignores warnings and confirms everything"
+      ],
+      "judges": "Anything that loses data, does an action twice, or leaves them stuck with no clear next step. Error text they cannot understand."
+    },
+    {
+      "id": "power-user",
+      "name": "Experienced daily user",
+      "targets": [
+        "web",
+        "api"
+      ],
+      "who": "Uses the product every day for real work, at volume. Has used tools like it for years.",
+      "knows": "The real-life cases and edge cases of their work, and what the numbers and records must add up to.",
+      "focus": [
+        "bug",
+        "usability",
+        "performance"
+      ],
+      "does": [
+        "Works fast with real-life cases, including the awkward ones: partial changes, corrections after the fact, undo weeks later",
+        "Checks that every number adds up: totals, taxes, rounding, counts",
+        "Looks for the audit trail: who did what and when",
+        "Uses the keyboard, filters and search to find records quickly",
+        "Repeats the same task many times in a row"
+      ],
+      "judges": "Wrong or unclear numbers, missing history, extra clicks on frequent tasks, and states that do not match what happened."
+    },
+    {
+      "id": "competitor-user",
+      "name": "User from a competitor",
+      "targets": [
+        "web"
+      ],
+      "who": "Moved to this product from a competing product in the same category.",
+      "knows": "How other tools in this category name and do things.",
+      "focus": [
+        "gap",
+        "usability",
+        "copy"
+      ],
+      "does": [
+        "Looks for the feature where the old tool had it, and uses the old tool's words",
+        "Compares the number of steps and clicks with the old tool",
+        "Tries the standard workflow from the old tool end to end",
+        "Expects common features to exist and notes when they do not"
+      ],
+      "judges": "Missing standard features, unfamiliar names, slower workflows than the old tool. A missing feature is a gap, not a bug."
+    },
+    {
+      "id": "integrator",
+      "name": "Developer building on the API",
+      "targets": [
+        "api"
+      ],
+      "who": "A developer at a customer or partner who connects their own system to the product's API. Has built on many APIs before.",
+      "knows": "HTTP, JSON, auth tokens and the API's docs. Not the product's screens or its internals.",
+      "focus": [
+        "bug",
+        "security",
+        "copy"
+      ],
+      "does": [
+        "Follows the docs step by step and copies their examples as written",
+        "Retries a call after a timeout or an error, and sends the same create twice",
+        "Pages through long lists, changes filters and sorting, and asks for one past the last page",
+        "Sends wrong types, missing fields, extra fields and values at the limits, and reads every error body",
+        "Uses one account's token on another account's ids",
+        "Reads back what each write changed, instead of trusting the response"
+      ],
+      "judges": "Docs that do not match what the API does, a vague or wrong status code or error body, a retry that creates a duplicate, data from another account, and a write that the response reports but the state does not show."
+    },
+    {
+      "id": "bad-actor",
+      "name": "Bad actor",
+      "targets": [
+        "web",
+        "api"
+      ],
+      "optIn": true,
+      "who": "Signs up with a new address to misuse the product for free: as a mailer for spam or phishing, as storage, or as a way into other customers' data. Treats every limit as something to measure and get around.",
+      "knows": "How phishing and spam work (copied brands, urgent text, link buttons, look-alike or Unicode domains, redirect links), how limits are usually built (fixed windows, per-IP versus per-user keys, races), and how to read network requests and replay them with a script.",
+      "focus": [
+        "security",
+        "bug"
+      ],
+      "does": [
+        "Maps every feature that sends something to an outside address (email, invite, share link, export) and every field of it they control: subject, body, sender name, reply-to, links, images",
+        "Puts brand names, links and urgent text in every free-text field that ends up in a message: business name, customer name, item names, notes",
+        "Measures each limit once: its window, its key (IP, user, org, record), what resets it, and whether two parallel requests get past it",
+        "Splits the work across accounts, records, team members and plans to multiply what each limit allows",
+        "Changes ids in URLs and requests to reach another account's records, and repeats requests directly to skip the UI",
+        "Stays on the free plan or trial, and verifies nothing that is not required"
+      ],
+      "judges": "Any way to send content they control to many addresses or many times without paying, verifying or hitting a limit; any message that can pass for another brand; any limit that can be bypassed or multiplied; any other account's data they can read or change; anything that hides the abuse from the business or the platform."
+    },
+    {
+      "id": "on-the-go",
+      "name": "Away from the desk",
+      "targets": [
+        "web"
+      ],
+      "optIn": true,
+      "who": "Uses the product on a phone or tablet while doing physical work: at a shelf, a counter or on the road. One hand is often busy or gloved, the light is poor and the network is weak.",
+      "knows": "Their daily tasks well, done quickly between other jobs. Knows the app's main screens, not its settings.",
+      "focus": [
+        "usability",
+        "bug",
+        "performance"
+      ],
+      "does": [
+        "Taps with one thumb and misses small or close targets",
+        "Gets interrupted mid-task, locks the screen or switches apps, then comes back minutes later",
+        "Works on a slow or dropping connection and taps again when nothing seems to happen",
+        "Looks up one record fast by search or scan, acts on it and moves on",
+        "Types as little as possible and expects choices instead of free text"
+      ],
+      "judges": "Lost progress after an interruption, actions done twice on a slow network, targets too small to hit, and anything that needs a desk to finish."
+    },
+    {
+      "id": "assistive-tech",
+      "name": "Keyboard and screen reader user",
+      "targets": [
+        "web"
+      ],
+      "optIn": true,
+      "who": "Cannot use a mouse well or see the screen well. Uses only the keyboard, a screen reader and browser zoom up to 200%.",
+      "knows": "Their assistive tools very well, and the product's job, not its layout.",
+      "focus": [
+        "accessibility",
+        "usability"
+      ],
+      "does": [
+        "Tabs through every screen in order and uses Enter, Space, Escape and the arrow keys",
+        "Listens to labels, headings and announcements instead of looking",
+        "Zooms the page to 200% and works there",
+        "Opens and closes every menu, dialog and picker with the keyboard only",
+        "Waits for loading, success and error messages to be announced"
+      ],
+      "judges": "Anything reachable only by mouse or hover, focus that is lost or invisible, unlabeled fields and buttons, meaning given by color alone, changes that are never announced, and content cut off at 200% zoom."
+    }
+  ]
+}

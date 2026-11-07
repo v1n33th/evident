@@ -1,0 +1,7 @@
+*
+!.gitignore
+!ledger/
+!ledger/**
+!*/
+!*/ledger/
+!*/ledger/**

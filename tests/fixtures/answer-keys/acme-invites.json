@@ -1,0 +1,253 @@
+{
+  "fixture": "acme-invites",
+  "bugs": [
+    {
+      "id": "P3",
+      "targets": [
+        "web",
+        "api"
+      ],
+      "kind": "copy",
+      "viewport": "desktop",
+      "steps": "Hit the daily limit on a Free org: the refusal reads \"Daily invite limit reached.\" and leaves out \"Try again tomorrow.\" that the spec requires.",
+      "match": [
+        "limit",
+        [
+          "tomorrow",
+          "try again"
+        ]
+      ]
+    },
+    {
+      "id": "P1",
+      "targets": [
+        "web",
+        "api"
+      ],
+      "kind": "bug",
+      "viewport": "desktop",
+      "steps": "Sign in as a Free org owner and send invites until 10 have gone out today, then send an 11th: it is accepted instead of refused. The refusal only starts at the 12th.",
+      "match": [
+        "11",
+        [
+          "limit",
+          "11th invite"
+        ]
+      ]
+    },
+    {
+      "id": "P4",
+      "targets": [
+        "web"
+      ],
+      "kind": "visual",
+      "viewport": "mobile",
+      "steps": "Open the team page in a window narrower than 400 px (for example 360 px wide): the email field stretches the form and the Send invite button is pushed past the right edge, out of view.",
+      "match": [
+        "button",
+        [
+          "off",
+          "covered",
+          "tapp",
+          "clipped",
+          "overflow"
+        ]
+      ]
+    },
+    {
+      "id": "P5",
+      "targets": [
+        "api"
+      ],
+      "kind": "security",
+      "viewport": "desktop",
+      "steps": "As a member of one org call GET /api/invites?org=<another org's id>: the other org's invites come back instead of your own.",
+      "match": [
+        "other org",
+        "invites"
+      ]
+    },
+    {
+      "id": "P6",
+      "targets": [
+        "web"
+      ],
+      "kind": "bug",
+      "viewport": "desktop",
+      "steps": "Send an invite, copy the link from the email, revoke the invite, then open the link: the invite is accepted although it was revoked.",
+      "match": [
+        "revoked",
+        "accept"
+      ]
+    },
+    {
+      "id": "P7",
+      "targets": [
+        "cli"
+      ],
+      "kind": "bug",
+      "viewport": "desktop",
+      "steps": "Run the CLI's invites list with an invalid token: the error text is printed on standard output and the command exits with code 0 instead of failing.",
+      "match": [
+        "exit",
+        "token"
+      ]
+    },
+    {
+      "id": "P8",
+      "targets": [
+        "web"
+      ],
+      "kind": "bug",
+      "viewport": "desktop",
+      "steps": "Open the team page with the browser console open: an uncaught error is logged on every load, although the page still works.",
+      "match": [
+        "team",
+        [
+          "console",
+          "renderBadge",
+          "ReferenceError"
+        ]
+      ]
+    },
+    {
+      "id": "P2",
+      "targets": [
+        "web",
+        "api",
+        "cli"
+      ],
+      "kind": "bug",
+      "viewport": "desktop",
+      "steps": "On the team page type one email and double-click Send invite: two invites for the same address appear in the list, and the Send button never looks disabled while the first is in flight. Sending the same invite twice at once through the API or the CLI also creates two invites.",
+      "match": [
+        [
+          "double",
+          "twice",
+          "duplicate"
+        ],
+        "invite",
+        [
+          "two",
+          "both",
+          "2 invites"
+        ]
+      ]
+    }
+  ],
+  "scenarios": {
+    "S1": {
+      "branch": "main",
+      "expect": [
+        {
+          "behaviour": "a Free org is limited to 10 invites a day",
+          "target": "any",
+          "match": [
+            "limit",
+            "free"
+          ],
+          "verdict": "proven"
+        },
+        {
+          "behaviour": "the refusal says Try again tomorrow",
+          "target": "any",
+          "match": [
+            "Try again tomorrow"
+          ],
+          "verdict": "proven"
+        },
+        {
+          "behaviour": "a paid org has no limit",
+          "target": "any",
+          "match": [
+            "paid",
+            "limit"
+          ],
+          "verdict": "proven"
+        },
+        {
+          "behaviour": "refused invites do not count toward the limit",
+          "target": "any",
+          "match": [
+            "refused",
+            "count"
+          ],
+          "verdict": "proven"
+        }
+      ]
+    },
+    "S2": {
+      "branch": "next",
+      "expect": [
+        {
+          "behaviour": "a Free org is limited to 10 invites a day",
+          "target": "any",
+          "match": [
+            "limit",
+            "free"
+          ],
+          "verdict": "disproved"
+        },
+        {
+          "behaviour": "the refusal says Try again tomorrow",
+          "target": "any",
+          "match": [
+            "Try again tomorrow"
+          ],
+          "verdict": "disproved"
+        },
+        {
+          "behaviour": "a paid org has no limit",
+          "target": "any",
+          "match": [
+            "paid",
+            "limit"
+          ],
+          "verdict": "proven"
+        },
+        {
+          "behaviour": "refused invites do not count toward the limit",
+          "target": "any",
+          "match": [
+            "refused",
+            "count"
+          ],
+          "verdict": "proven"
+        }
+      ]
+    },
+    "S3": {
+      "branch": "next",
+      "find": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P6",
+        "P8"
+      ],
+      "min": 5
+    },
+    "S4": {
+      "branch": "next",
+      "badActorMail": true,
+      "find": [
+        "P5",
+        "P7"
+      ],
+      "min": 2
+    },
+    "F1": {
+      "branch": "next",
+      "fix": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P6",
+        "P8"
+      ],
+      "min": 5
+    }
+  }
+}

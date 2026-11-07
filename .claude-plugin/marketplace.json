@@ -1,0 +1,16 @@
+{
+  "name": "evident",
+  "owner": {
+    "name": "v1n33th"
+  },
+  "metadata": {
+    "description": "Evident: exploratory testing, fixes and proof with evidence a person can check."
+  },
+  "plugins": [
+    {
+      "name": "evident",
+      "source": "./",
+      "description": "bug-bash, fix-and-prove, show-your-work and evidence, with the prover, explorer, evidence checker and fixer agents."
+    }
+  ]
+}

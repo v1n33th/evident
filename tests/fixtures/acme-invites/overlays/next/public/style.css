@@ -1,0 +1,23 @@
+body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1c2430; }
+main { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; }
+form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+input { padding: 8px; font-size: 1rem; border: 1px solid #b8c0cc; border-radius: 4px; min-width: 0; flex: 1 1 180px; }
+button { padding: 8px 14px; font-size: 1rem; border: 0; border-radius: 4px; background: #2457d6; color: #fff; cursor: pointer; }
+button:disabled { opacity: .5; cursor: wait; }
+button.revoke { background: #b3261e; }
+#toast { min-height: 1.4em; margin: 8px 0; font-weight: 600; }
+#invite-list { width: 100%; border-collapse: collapse; background: #fff; }
+#invite-list td { padding: 8px; border-bottom: 1px solid #e1e5ea; }
+#invite-list .actions { display: flex; gap: 6px; }
+
+@media (max-width: 599px) {
+  #invite-list, #invite-list tbody, #invite-list tr, #invite-list td { display: block; }
+  #invite-list tr { padding: 8px 0; border-bottom: 1px solid #e1e5ea; }
+  #invite-list td { border: 0; padding: 2px 8px; }
+}
+
+@media (max-width: 399px) {
+  #invite-form { flex-wrap: nowrap; }
+  #invite-form input { min-width: 420px; }
+}

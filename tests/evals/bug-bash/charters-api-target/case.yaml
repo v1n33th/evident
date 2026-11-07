@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: charters-api-target
+expected_outcome: |
+  charters.json holds API charters only: every profile has one whose target its profile
+  covers, no charter has viewports, heuristics are the API ones, and the bad actor never
+  gets a named account.
+context:
+  scaffold_script: place-files.sh

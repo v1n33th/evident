@@ -1,0 +1,17 @@
+{
+  "id": "BUG-003",
+  "kind": "visual",
+  "title": "\"Coupon applied\" label is cut off on mobile",
+  "severity": "minor",
+  "session": "T2",
+  "target": "web",
+  "account": "new",
+  "viewport": "mobile",
+  "url": "http://localhost:3000/checkout",
+  "steps": [
+    "At mobile width, add one item to the cart",
+    "Apply SAVE10"
+  ],
+  "expected": "The full text \"Coupon applied: SAVE10\" is visible",
+  "actual": "The text shows \"Coupon appl\" and is cut off at the right edge"
+}

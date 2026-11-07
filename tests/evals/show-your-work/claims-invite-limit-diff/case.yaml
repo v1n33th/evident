@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: claims-invite-limit-diff
+expected_outcome: |
+  claims.json in the run folder passes build-proof --plan with no Problem lines, and its claims
+  cover the Free daily limit of 10 at its boundaries with the exact refusal text, that refused
+  invites do not use up the limit, that paid plans stay unlimited, and that a member without the
+  permission is refused, all in plain words with no code names.
+context:
+  scaffold_script: place-files.sh

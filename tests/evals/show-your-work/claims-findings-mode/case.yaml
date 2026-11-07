@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: claims-findings-mode
+expected_outcome: |
+  claims.json passes build-proof --plan with no Problem lines and holds one claim per failure:
+  BUG-001 and BUG-002 merged into one web claim, BUG-004 as its own api claim, BUG-003 as a routine
+  mobile claim; every source is found: with the bug ids, and no other claims are added.
+context:
+  scaffold_script: place-files.sh

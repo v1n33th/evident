@@ -1,0 +1,163 @@
+{
+  "feature": "team-invites",
+  "title": "Daily invite limit for Free orgs",
+  "input": "uncommitted changes on main at abc1234",
+  "approvedAt": null,
+  "terms": [
+    {
+      "term": "invite",
+      "means": "an email that asks someone to join the org"
+    }
+  ],
+  "covers": [
+    {
+      "area": "daily limit",
+      "claims": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5"
+      ]
+    }
+  ],
+  "willNotProve": "the reset at 00:00 UTC, parallel sends",
+  "areas": [],
+  "claims": [
+    {
+      "id": "C1",
+      "area": null,
+      "target": "web",
+      "rank": "headline",
+      "status": "active",
+      "fromLedger": false,
+      "statement": "Where the org is on Free, the app sends at most 10 invites a day.",
+      "given": "Owner of a new Free org signed up today. 9 invites sent today.",
+      "setup": "seed-invites {org}=QA Free {count}=9",
+      "cases": [
+        {
+          "id": "a",
+          "do": "Send the 10th invite",
+          "expect": "Toast \"Invite sent\""
+        },
+        {
+          "id": "b",
+          "do": "Send the 11th invite",
+          "expect": "\"Daily invite limit reached. Try again tomorrow.\" (new)"
+        },
+        {
+          "id": "c",
+          "do": "On a Pro org with 10 sent today, send one more",
+          "expect": "Toast \"Invite sent\""
+        }
+      ],
+      "evidence": "GIF of each send; text on screen after each send",
+      "proof": "will",
+      "risk": "Owners locked out or spam allowed",
+      "source": "abc1234 invites",
+      "check": null,
+      "changed": null,
+      "retiredReason": null
+    },
+    {
+      "id": "C2",
+      "area": null,
+      "target": "web",
+      "rank": "headline",
+      "status": "active",
+      "fromLedger": false,
+      "statement": "If an invite is refused, then it does not count toward the daily limit of 10 invites.",
+      "given": "Owner of a new Free org signed up today. 9 invites sent today.",
+      "setup": "seed-invites {org}=QA Free {count}=9",
+      "cases": [
+        {
+          "id": "a",
+          "do": "Send an invite to an already invited address, then a new address",
+          "expect": "First: \"This person is already invited.\"; second: Toast \"Invite sent\""
+        }
+      ],
+      "evidence": "GIF of each send; text on screen after each send",
+      "proof": "will",
+      "risk": "Owners locked out or spam allowed",
+      "source": "abc1234 invites",
+      "check": null,
+      "changed": null,
+      "retiredReason": null
+    },
+    {
+      "id": "C3",
+      "area": null,
+      "target": "web",
+      "rank": "headline",
+      "status": "active",
+      "fromLedger": false,
+      "statement": "Where the org is on a paid plan, the app sends more than 10 invites a day.",
+      "given": "Owner of a new Pro org signed up today. 10 invites sent today.",
+      "setup": "set-plan {org}=QA Pro {plan}=pro; seed-invites {org}=QA Pro {count}=10",
+      "cases": [
+        {
+          "id": "a",
+          "do": "Send the 11th invite",
+          "expect": "Toast \"Invite sent\""
+        }
+      ],
+      "evidence": "GIF of each send; text on screen after each send",
+      "proof": "will",
+      "risk": "Owners locked out or spam allowed",
+      "source": "abc1234 invites",
+      "check": null,
+      "changed": null,
+      "retiredReason": null
+    },
+    {
+      "id": "C4",
+      "area": null,
+      "target": "web",
+      "rank": "routine",
+      "status": "active",
+      "fromLedger": false,
+      "statement": "If an invite email fails to send, then the invite does not count toward the daily limit.",
+      "given": "Owner of a new Free org signed up today. 9 invites sent today.",
+      "setup": "seed-invites {org}=QA Free {count}=9",
+      "cases": [
+        {
+          "id": "a",
+          "do": "With the mail server refusing mail, send an invite, then another",
+          "expect": "First: an error; second: Toast \"Invite sent\""
+        }
+      ],
+      "evidence": "GIF of each send; text on screen after each send",
+      "proof": "will",
+      "risk": "Owners locked out or spam allowed",
+      "source": "abc1234 invites",
+      "check": null,
+      "changed": null,
+      "retiredReason": null
+    },
+    {
+      "id": "C5",
+      "area": null,
+      "target": "web",
+      "rank": "headline",
+      "status": "active",
+      "fromLedger": false,
+      "statement": "When a Free org is at its daily limit, the app shows \"Daily invite limit reached. Try again tomorrow.\" (new).",
+      "given": "Owner of a new Free org signed up today. 10 invites sent today.",
+      "setup": "seed-invites {org}=QA Free {count}=10",
+      "cases": [
+        {
+          "id": "a",
+          "do": "Send an invite",
+          "expect": "\"Daily invite limit reached. Try again tomorrow.\" (new)"
+        }
+      ],
+      "evidence": "GIF of each send; text on screen after each send",
+      "proof": "will",
+      "risk": "Owners locked out or spam allowed",
+      "source": "abc1234 invites",
+      "check": null,
+      "changed": null,
+      "retiredReason": null
+    }
+  ]
+}

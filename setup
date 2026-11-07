@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Links each skills/<name>/ into ~/.claude/skills/<name>, writes each agents/<name>.md into ~/.claude/agents/, then
+# offers to let Claude Code read this clone without asking. --remove takes all three back.
+# --agents <folder> only writes the agents into <folder>, for example a project's .claude/agents/.
+# --codex only links the skills into ${CODEX_HOME:-~/.codex}/skills for Codex (no agents, no settings); with --remove,
+# takes them back.
+# --model <role>=<model>[,<role>=<model>] (first) writes that model into the agent files of those roles (explorer,
+# prover, checker, fixer) instead of inherit, for cheaper workers under a stronger orchestrator.
+# Usage: ./setup [--model ...] [--remove] | ./setup [--model ...] --agents <folder> | ./setup --codex [--remove]
+# (CLAUDE_SKILLS_DIR and CLAUDE_AGENTS_DIR override the target folders, CLAUDE_CONFIG_DIR the folder of the settings.json
+# it edits)
+set -eu
+here="$(cd "$(dirname "$0")" && pwd)"
+dest="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+models=""
+if [ "${1:-}" = "--model" ]; then
+  models="${2:?Usage: ./setup --model <role>=<model>[,<role>=<model>] ...}"; shift 2
+fi
+codex=""
+if [ "${1:-}" = "--codex" ]; then
+  codex=1; dest="${CODEX_HOME:-$HOME/.codex}/skills"; shift
+fi
+agents="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
+
+# An agent's hook runs guard.mjs from $HOME/.claude/skills/. The written copy names this clone's skills/ instead, so
+# the hook finds it wherever the skills are linked. A file this clone did not write is left alone.
+write_agents() {
+  mkdir -p "$1"
+  for agent in "$here"/agents/*.md; do
+    file="$1/$(basename "$agent")"
+    if [ -e "$file" ] && ! grep -qF "$here/skills/" "$file"; then
+      echo "skipped $(basename "$agent" .md): $file exists and was not written by this setup" >&2
+      continue
+    fi
+    # The agent's role is its file name after evident-, up to a dash (evident-prover-shell is a prover).
+    role="$(basename "$agent" .md)"; role="${role#evident-}"; role="${role%%-*}"
+    model="inherit"
+    for pair in $(printf '%s' "$models" | tr ',' ' '); do
+      [ "${pair%%=*}" = "$role" ] && model="${pair#*=}"
+    done
+    node -e 'const fs = require("fs"); process.stdout.write(fs.readFileSync(process.argv[1], "utf8").split("$HOME/.claude/skills/").join(process.argv[2]).replace(/^model: inherit$/m, `model: ${process.argv[3]}`))' "$agent" "$here/skills/" "$model" > "$file"
+    echo "wrote $file${models:+ (model: $model)}"
+  done
+}
+
+if [ "${1:-}" = "--agents" ]; then
+  [ -n "${2:-}" ] || { echo "Usage: ./setup --agents <folder>" >&2; exit 1; }
+  write_agents "$2"
+  exit 0
+fi
+
+settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+mkdir -p "$dest"
+for skill in "$here"/skills/*/; do
+  [ -f "$skill/SKILL.md" ] || continue
+  name="$(basename "$skill")"
+  link="$dest/$name"
+  if [ "${1:-}" = "--remove" ]; then
+    # Only remove links that point into this clone.
+    [ -L "$link" ] && [ "$(readlink "$link")" = "${skill%/}" ] && rm "$link" && echo "removed $name"
+    continue
+  fi
+  if [ -e "$link" ] && ! [ -L "$link" ]; then
+    echo "skipped $name: $link exists and is not a link" >&2
+    continue
+  fi
+  ln -sfn "${skill%/}" "$link"
+  echo "linked $name -> ${skill%/}"
+done
+# Codex has no agent files or settings.json to write.
+[ -z "$codex" ] || exit 0
+if [ "${1:-}" = "--remove" ]; then
+  for agent in "$here"/agents/*.md; do
+    file="$agents/$(basename "$agent")"
+    [ -f "$file" ] && grep -qF "$here/skills/" "$file" && rm "$file" && echo "removed $(basename "$agent" .md)"
+  done
+else
+  write_agents "$agents"
+fi
+
+# The links point outside the user's project, so Claude Code asks before each agent
+# reads a skill file. permissions.additionalDirectories lets it read them without asking.
+# Exit codes: check 0 = listed, 2 = not listed; 1 = settings.json is not valid JSON.
+dirs() {
+  node -e '
+const fs = require("fs"), path = require("path");
+const [file, dir, mode] = process.argv.slice(1);
+let s = {};
+try { s = JSON.parse(fs.readFileSync(file, "utf8")); }
+catch (e) { if (e.code !== "ENOENT") { console.error(`skipped settings: ${file} is not valid JSON`); process.exit(1); } }
+const p = (s.permissions ??= {}), list = p.additionalDirectories ?? [];
+if (mode === "check") process.exit(list.includes(dir) ? 0 : 2);
+if (mode === "add") p.additionalDirectories = [...list.filter((d) => d !== dir), dir];
+if (mode === "remove") { if (!list.includes(dir)) process.exit(0); p.additionalDirectories = list.filter((d) => d !== dir); }
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+' "$settings" "$here" "$1"
+}
+
+if [ "${1:-}" = "--remove" ]; then
+  dirs remove && echo "settings: $here is no longer in additionalDirectories"
+  exit 0
+fi
+status=0; dirs check || status=$?
+[ "$status" -eq 2 ] || exit 0
+printf 'Let Claude Code read these skills in every project without asking? This adds %s to permissions.additionalDirectories in %s. [y/N] ' "$here" "$settings"
+answer=""; read -r answer || true
+case "$answer" in
+  [yY]*) dirs add && echo "settings: added $here" ;;
+  *) echo "settings: not changed. Agents will ask before reading the skill files." ;;
+esac

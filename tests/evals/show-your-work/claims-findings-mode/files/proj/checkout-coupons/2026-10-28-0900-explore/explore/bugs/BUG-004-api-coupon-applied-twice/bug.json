@@ -1,0 +1,18 @@
+{
+  "id": "BUG-004",
+  "kind": "bug",
+  "title": "Sending the same coupon twice to the API doubles the discount",
+  "severity": "major",
+  "session": "T3",
+  "target": "api",
+  "account": "new",
+  "url": "POST http://localhost:3000/api/cart/coupon",
+  "steps": [
+    "Create a cart with one item at 50.00",
+    "POST /api/cart/coupon with {\"code\":\"SAVE10\"}",
+    "POST the same request again",
+    "GET /api/cart"
+  ],
+  "expected": "Second request refused with 409; cart discount 5.00",
+  "actual": "Both requests return 200; cart discount 10.00"
+}

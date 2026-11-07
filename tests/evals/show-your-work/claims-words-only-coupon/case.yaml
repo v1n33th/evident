@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: claims-words-only-coupon
+expected_outcome: |
+  claims.json passes build-proof --plan with no Problem lines and turns only the user's words into
+  claims: 10% off the subtotal before tax with an exact worked example, one coupon per order, and
+  the exact expired-coupon text, each sourced to the user's words, inventing no other coupon rules.
+context:
+  scaffold_script: place-files.sh

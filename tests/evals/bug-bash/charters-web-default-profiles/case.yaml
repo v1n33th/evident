@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: charters-web-default-profiles
+expected_outcome: |
+  charters.json holds 3 to 7 web charters covering all three profiles, with viewports from
+  Preferences (mobile for the phone user), accounts that are keys, kinds or signed out, budgets of
+  12 to 18, and missions in each person's voice that never hint at a suspected bug or name code;
+  the reply is the one-line-per-charter view.
+context:
+  scaffold_script: place-files.sh

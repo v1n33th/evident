@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign up - Acme</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="signup">
+<main>
+<h1>Sign up</h1>
+<form id="auth-form">
+<input id="email" type="email" placeholder="Email" aria-label="Email" required>
+<input id="password" type="password" placeholder="Password" aria-label="Password" required>
+<button id="submit" type="submit">Sign up</button>
+</form>
+<p><a href="/signin">Already have an account? Sign in</a></p>
+<p id="toast" role="status"></p>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

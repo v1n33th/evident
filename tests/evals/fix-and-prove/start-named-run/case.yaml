@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: start-named-run
+expected_outcome: |
+  With a run named, fix-and-prove does not list or ask about pending bugs. It says in one line
+  that round 1 starts from 2026-10-27-0900-explore with 1 bug (BUG-001; BUG-002 already has a fix), with
+  no new explore, and starts no explore run.
+context:
+  scaffold_script: place-files.sh

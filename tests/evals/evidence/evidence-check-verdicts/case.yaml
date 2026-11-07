@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: evidence-check-verdicts
+expected_outcome: |
+  evidence-check.jsonl has one row per evidence file with its sha256 copied: the screenshot whose
+  text differs from its note is a mismatch, the refusal screenshot whose raw response is a 201 is
+  a mismatch, the app error the note names is a match, and redacted text agrees with its raw file.
+  Nothing else in the run folder changes.
+context:
+  scaffold_script: place-files.sh

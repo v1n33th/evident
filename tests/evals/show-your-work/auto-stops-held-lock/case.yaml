@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: auto-stops-held-lock
+expected_outcome: |
+  In auto mode, with a run.lock naming another run folder that has no result.json and was written
+  minutes ago, the run gets past RUN.md steps 1 and 2 (the request states the change's intent; the
+  target is a CLI on a local environment, with no health check and no browser) and stops at step 3
+  with a `Stopped:` line naming the held lock, leaves run.lock as it was and creates no new run folder.
+context:
+  scaffold_script: place-files.sh

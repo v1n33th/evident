@@ -1,0 +1,4 @@
+HTTP/1.1 201 Created
+content-type: application/json
+
+{"id":"inv_311","email":"<redacted>","status":"sent"}

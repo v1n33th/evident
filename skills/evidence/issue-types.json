@@ -1,0 +1,113 @@
+{
+  "types": [
+    {
+      "id": "bug",
+      "name": "Functional bug",
+      "plural": "Functional bugs",
+      "lookFor": [
+        "Wrong result, wrong number or wrong total",
+        "Saved data lost, duplicated or saved in the wrong place",
+        "An error, a crash or a page that does not load",
+        "A button or link that does nothing or goes to the wrong place",
+        "Invalid, empty or special-character input that is accepted, valid input that is rejected, or long input that breaks the page or is lost",
+        "Double-click, Back after submit, refresh or a second tab that leaves duplicates or a stuck state",
+        "A state on screen that does not match what happened",
+        "A console error or a failed request (4xx, 5xx) during normal use, even if the screen looks fine",
+        "API: success (2xx, exit 0) when the action did not happen: read the state back, a response alone is not completion",
+        "API: one input that breaks one rule is accepted, or the error names the wrong field",
+        "API: the same request or command run twice makes two effects (two records, two charges, two emails)"
+      ]
+    },
+    {
+      "id": "usability",
+      "name": "Usability issue",
+      "plural": "Usability issues",
+      "lookFor": [
+        "The next step is not clear, or the main action is hard to find",
+        "Too many steps or clicks for a frequent task",
+        "No loading state or feedback after an action, or feedback that disappears too fast to read",
+        "A destructive or costly action with no confirmation, or no way to undo",
+        "The user must remember something from another screen",
+        "Similar screens or dialogs behave differently",
+        "A form loses what the user typed (not saved yet) after an error, Back or refresh",
+        "An empty state that does not say what to do next"
+      ]
+    },
+    {
+      "id": "visual",
+      "name": "Visual issue",
+      "plural": "Visual issues",
+      "lookFor": [
+        "Overlapping, clipped or cut text, or elements hidden behind others",
+        "Content wider than the screen, or sideways scroll",
+        "Controls too small to tap, or off screen, at phone width",
+        "Misaligned items, uneven spacing, or components that look different from the same component elsewhere",
+        "Broken images or icons",
+        "Layout that jumps while the page loads",
+        "Colors that do not match the meaning, for example a green Delete button"
+      ]
+    },
+    {
+      "id": "copy",
+      "name": "Copy issue",
+      "plural": "Copy issues",
+      "lookFor": [
+        "Raw technical text: status codes, validator messages, IDs, unformatted numbers, dates or prices",
+        "An error that does not say what went wrong or how to fix it",
+        "Typos, wrong names, or the same thing called by two names",
+        "Placeholder text, or text in the wrong language",
+        "Text that says something different from what the action does",
+        "Jargon the user does not know"
+      ]
+    },
+    {
+      "id": "accessibility",
+      "name": "Accessibility issue",
+      "plural": "Accessibility issues",
+      "lookFor": [
+        "A control you cannot reach or use with the keyboard alone (Tab, Enter, Space, Esc), or focus that gets stuck",
+        "No visible focus, or focus that jumps in an odd order",
+        "A button, icon, image or field with no name or label a screen reader could read",
+        "Text too faint to read against its background, or meaning shown by color alone",
+        "A dialog that does not take focus, does not close with Esc, or loses your place when it closes",
+        "Content cut off or hidden at 200% zoom"
+      ]
+    },
+    {
+      "id": "performance",
+      "name": "Performance issue",
+      "plural": "Performance issues",
+      "lookFor": [
+        "An action that takes several seconds, even with a loading state",
+        "The same request sent twice, or many requests for one action",
+        "A page that gets slow with many items, if you can load or create many",
+        "Flicker or a full reload where a small update would do"
+      ]
+    },
+    {
+      "id": "security",
+      "name": "Security or privacy issue",
+      "plural": "Security or privacy issues",
+      "lookFor": [
+        "An action that a user without permission can still do",
+        "Changing an ID in the URL opens a record this user should not see",
+        "Another user's data, tokens or secrets in a page, the URL, the console or a network response",
+        "Typed HTML or script that renders or runs",
+        "A page that still works after sign-out, through Back or a saved link",
+        "API: another account's or role's id in a request is accepted",
+        "A link the app itself checks, records or names as one host (not the label a user typed) but that opens another: encoded userinfo (https://brand.com%2F@evil.example), an @, a backslash, look-alike or Unicode dots, an IP or hex host, or an open redirect on a trusted host (translate.google.com, linkedin.com/redir, youtube.com/redirect)",
+        "A rule the page keeps that the server does not: what the server stored, logged or let through differs from what the page showed",
+        "API: a record's lifecycle or structure taken as the page never sends it: a step twice or out of order (confirm, activate, delete in use), more than the limit at once, a duplicate id, a nested or unknown part"
+      ]
+    },
+    {
+      "id": "gap",
+      "name": "Feature gap",
+      "plural": "Feature gaps",
+      "lookFor": [
+        "A standard feature this person expects, from comparable products, that is missing",
+        "A task this person can do only with a workaround"
+      ]
+    }
+  ]
+}

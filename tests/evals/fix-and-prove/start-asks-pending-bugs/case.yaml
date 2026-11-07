@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: start-asks-pending-bugs
+expected_outcome: |
+  With no run or bug named and no bug-bash run in the conversation, fix-and-prove lists the
+  pending team-invites bugs (no fix record), newest run first, and asks once whether to fix them or
+  explore. It lists exactly 2026-10-28-0900-explore BUG-001 and BUG-002 and 2026-10-27-0900-explore BUG-001,
+  and nothing else. It starts no explore run and dispatches no fixer before the answer.
+context:
+  scaffold_script: place-files.sh

@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: check-marks-planted-faults
+expected_outcome: |
+  The check marks C1 (the code allows an 11th invite), C4 (the invite is created before the email
+  is sent) and C5 (the refusal text lacks "Try again tomorrow.") as likely to fail, leaves C2 and
+  C3 null, changes no other field, and names no file or line in the marks.
+context:
+  scaffold_script: place-files.sh

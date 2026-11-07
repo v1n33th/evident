@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: start-auto-takes-pending
+expected_outcome: |
+  In auto mode with no context, fix-and-prove asks nothing: it takes the 3 pending team-invites
+  bugs (2026-10-28-0900-explore BUG-001 and BUG-002, 2026-10-27-0900-explore BUG-001), says in one line that
+  round 1 starts from them with no new explore, then stops at RUN.md step 3 because another run
+  (2026-10-29-0900-prove) holds the run lock.
+context:
+  scaffold_script: place-files.sh

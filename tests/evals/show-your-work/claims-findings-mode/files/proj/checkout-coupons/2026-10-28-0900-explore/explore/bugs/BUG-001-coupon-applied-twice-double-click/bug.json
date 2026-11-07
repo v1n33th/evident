@@ -1,0 +1,20 @@
+{
+  "id": "BUG-001",
+  "kind": "bug",
+  "title": "Double-clicking Apply takes the coupon off twice",
+  "severity": "critical",
+  "session": "T1",
+  "target": "web",
+  "account": "new",
+  "viewport": "desktop",
+  "url": "http://localhost:3000/checkout",
+  "steps": [
+    "Add one item at 50.00 to the cart",
+    "Open checkout",
+    "Type SAVE10 in the coupon field",
+    "Double-click Apply"
+  ],
+  "expected": "Discount 5.00, total before tax 45.00",
+  "actual": "Discount 10.00, total before tax 40.00",
+  "hypothesis": "two requests race"
+}

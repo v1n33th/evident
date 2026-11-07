@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: auto-stops-remote-without-env
+expected_outcome: |
+  In auto mode with no environment.md for the app and an App on a host that is not local, the run
+  stops with one `Stopped:` line (auto mode needs environment.md, or the host is not marked a test
+  environment) and creates no project or run folder under the results folder.
+context:
+  scaffold_script: place-files.sh
