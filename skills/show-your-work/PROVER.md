@@ -36,6 +36,7 @@ For each case, decide "expected" from its `expect` before you act. After each at
   3. Log only the capture that shows it.
 - Capture every case at every viewport, pass or fail, in its own files, as `CAPTURE.md` says. A claim's `evidence` says what they must show, never which methods. Never log a case from another case's run: a case that passes without its own evidence is not proven.
 - If a dialog, a rate limit or a down service blocks a case, log it "blocked" with the reason in "note", and go on to the next case.
+- A case fails only on what its `expect` is about. When you cannot reach what the case starts from (a choice the page does not offer, a locked field, a page you cannot open), the claim has not failed: try another way the UI or the claim's `setup` reaches the same state, such as a setting elsewhere that decides it. None works: log the case "blocked" with the note `needs setup: <what you could not reach, and what seems to decide it>`, never "fail", and file no bug.
 
 ## Setup
 

@@ -143,10 +143,11 @@ export function fixReport(fixRun) {
   return { data, problems };
 }
 
-export function chatSummary(data, openUrl) {
+// `lead`: the request page's own headline; a fix step outside a request has none and counts its bugs instead.
+export function chatSummary(data, openUrl, lead) {
   const { fixed, notProven, notFixed, decisions } = data.counts;
   return [
-    `Fix: ${data.feature}: ${fixed} fixed · ${notProven} fixed, not proven · ${notFixed} not fixed · ${decisions} need a decision`,
+    ...(lead ?? [`Fix: ${data.feature}: ${fixed} fixed · ${notProven} fixed, not proven · ${notFixed} not fixed · ${decisions} need a decision`]),
     ...(data.stopped ? [`Stopped: ${data.stopped}`] : []),
     ...(data.flaky ?? []).map((f) => `! round ${f.round} ${f.id} flaky: it held and failed on the same code; nothing was undone for it`),
     ...data.attention.map((b) => `! round ${b.round} ${b.id} [${b.shownStatus}${b.fix?.risk ? `, ${b.fix.risk} risk` : ''}] ${b.title}${b.fix?.decision ? `: ${b.fix.decision}` : ''}`),
@@ -160,8 +161,9 @@ async function writeReport(fixRun) {
   const { data, problems } = fixReport(fixRun);
   const report = await import('../../show-your-work/scripts/report.mjs');
   const result = report.writeResult(fixRun, { ...data, problems });
-  const page = where(fixRun) ? (await report.writeReportFor(where(fixRun).request), join(where(fixRun).request, 'report.html')) : result;
-  console.log(chatSummary(data, pathToFileURL(resolve(page)).href));
+  const request = where(fixRun)?.request;
+  const page = request ? (await report.writeReportFor(request), join(request, 'report.html')) : result;
+  console.log(chatSummary(data, pathToFileURL(resolve(page)).href, request ? await report.headline(request) : undefined));
   for (const problem of problems) console.log(`  Problem: ${problem}`);
 }
 

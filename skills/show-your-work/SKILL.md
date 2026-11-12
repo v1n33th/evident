@@ -60,7 +60,7 @@ Follow `<skill directory>/PROOF.md`.
 
 ## Answering a question
 
-When the user answers a question a report or chat summary asked ("answer Q-1a2b: per org"), find the project folder as `RUN.md` step 1 does (`project.mjs` only), then run `node <skill directory>/scripts/questions.mjs <project folder> <Q-id> <their answer, verbatim>` and show its lines verbatim. A message pasted from the report's Copy answers holds one `answer <Q-id>: ...` line per question: run the command once per line, in one call. Its `decide BUG-NNN of ...` lines are fix-and-prove's: follow `<skill directory>/../fix-and-prove/SKILL.md` `## Decisions from a page` for them. Do nothing else: the feature's next explore and proof read the answer. Never answer a question yourself, in any mode. On `Problem: no question`, say so and ask for the id again.
+When the user answers a question a report or chat summary asked ("answer Q-1a2b: per org"), find the project folder as `RUN.md` step 1 does (`project.mjs` only), then run `node <skill directory>/scripts/questions.mjs <project folder> <Q-id> <their answer, verbatim>` and show its lines verbatim. A message pasted from the report's Copy answers holds one `answer <Q-id>: ...` line per question: run the command once per line, in one call. Its `decide <BUG-NNN or C-id> of ...` lines are fix-and-prove's: follow `<skill directory>/../fix-and-prove/SKILL.md` `## Decisions from a page` for them. Do nothing else: the feature's next explore and proof read the answer. Never answer a question yourself, in any mode. On `Problem: no question`, say so and ask for the id again.
 
 ## Auto mode
 

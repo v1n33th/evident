@@ -1,6 +1,6 @@
 {
   "name": "evident",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Explore a feature as real users would (bug-bash), fix and prove the bugs (fix-and-prove), prove a change with evidence a person can check (show-your-work), and capture that evidence (evidence).",
   "author": { "name": "v1n33th" },
   "license": "MIT",

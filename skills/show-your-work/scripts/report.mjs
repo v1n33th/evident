@@ -17,15 +17,19 @@ export function writeResult(step, data) {
   return file;
 }
 
-// Newest modified time of any file in a folder tree, result.json left out.
+// Files that change no verdict: the result itself, a bug's record (a fixer or a decision writes its fix into bug.json after
+// the check) and a bug number's reservation (.BUG-NNN). A bug filed later with only its record so leaves the result fresh;
+// evidence added to it does not.
+const inert = (name) => name === 'result.json' || name === 'bug.json' || /^\.BUG-\d+$/.test(name);
+
+// Newest modified time of any file in a folder tree, inert files left out.
 const newest = (dir) => readdirSync(dir, { withFileTypes: true }).reduce((max, e) => {
-  // A fixer writes its fix record into bug.json after the explore is checked: that is not a change to the evidence.
-  if (e.name === 'result.json' || e.name === 'bug.json') return max;
+  if (inert(e.name)) return max;
   const path = join(dir, e.name);
   return Math.max(max, e.isDirectory() ? newest(path) : statSync(path).mtimeMs);
 }, 0);
 
-const listed = (step, dir = step) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.name === 'result.json' || e.name === 'bug.json' ? []
+const listed = (step, dir = step) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (inert(e.name) ? []
   : e.isDirectory() ? listed(step, join(dir, e.name)) : [relative(step, join(dir, e.name))])).sort();
 
 // A step's checked data, while no file in it changed, came or went after the check.
@@ -34,7 +38,9 @@ export function readResult(step) {
   if (!existsSync(file)) return null;
   try {
     const { newest: then, files, data } = JSON.parse(readFileSync(file, 'utf8'));
-    return typeof then === 'number' && newest(step) <= then && String(files) === String(listed(step)) ? data : null;
+    // An older result may list inert files too: compare without them.
+    const kept = (files ?? []).filter((f) => !inert(f.split('/').pop()));
+    return typeof then === 'number' && newest(step) <= then && String(kept) === String(listed(step)) ? data : null;
   } catch {
     return null;
   }
@@ -182,7 +188,9 @@ export async function requestData(request) {
     if (!link) return { verdict: null, at: null };
     const p = [...proofs].reverse().find((s) => s.data?.claims?.some((c) => c.id === link.claim));
     const at = p ? Math.max(0, ...p.lines.filter((l) => l.claim === link.claim).map((l) => l.t)) || null : null;
-    return { verdict: !p || !p.checked ? 'checking' : p.data.claims.find((c) => c.id === link.claim)?.verdict ?? 'checking', at: valid(at), claim: link.claim };
+    // Once the run is over, a proof that never finished could not prove the fix.
+    const open = live ? 'checking' : 'not-proven';
+    return { verdict: !p || !p.checked ? open : p.data.claims.find((c) => c.id === link.claim)?.verdict ?? open, at: valid(at), claim: link.claim };
   };
   // When a bug was found: its first capture in the step that filed it. When it was fixed: its fix step's finish.
   const stepLines = new Map();
@@ -197,9 +205,20 @@ export async function requestData(request) {
   const fixSteps = [...steps, ...fixers.flatMap(stepsOf)].filter((s) => s.kind === 'fix');
   const patchOf = (patch) => { const at = patch && fixSteps.find((s) => existsSync(join(s.dir, patch))); return at ? rel(join(at.dir, patch)) : null; };
   const fixAsked = steps.some((s) => s.kind === 'fix') || fixers.length > 0;
+  // One change can fix several bugs ("Fixed with BUG-010"): a decision on one covers the others, decided before or after.
+  const decidedBy = new Map();
+  for (const f of folders) { try { const x = readJson(join(f, 'bug.json')).fix; const k = x?.patch || x?.commit; if (k && x.decided && !decidedBy.has(k)) decidedBy.set(k, x); } catch {} }
   const bugs = folders.filter((f) => existsSync(join(f, 'bug.json')) && !seen.has(real(f)) && seen.add(real(f))).flatMap((folder) => {
     let b;
     try { b = readJson(join(folder, 'bug.json')); } catch (error) { problems.push(`${rel(folder)}/bug.json: ${error.message}`); return []; }
+    // A fix run that finished after your answer and still asks has asked again: your answer is the earlier one, the new question is open.
+    const ranAt = fixSteps.filter((s) => roundBugFolders(s.dir).some((x) => real(x) === real(folder))).map((s) => Date.parse(readResult(s.dir)?.generatedAt ?? '') || 0);
+    if (b.fix?.decided && ['needs-decision', 'not-fixed'].includes(b.fix.status) && Math.max(0, ...ranAt) > (Date.parse(b.fix.decidedAt ?? '') || Infinity)) {
+      const { decided, decidedAt, ...rest } = b.fix;
+      b.fix = { ...rest, earlier: decided };
+    }
+    const twin = !b.fix?.decided && decidedBy.get(b.fix?.patch || b.fix?.commit);
+    if (twin) b.fix = { ...b.fix, decided: twin.decided, ...(twin.status === 'wont-fix' ? { status: 'wont-fix' } : {}), ...(twin.invalid ? { invalid: twin.invalid } : {}) };
     const proof = proofOf(folder);
     const proven = proof.verdict;
     const status = b.fix?.status;
@@ -218,7 +237,7 @@ export async function requestData(request) {
       // Its step folder as the chat line names it, from the folder that holds the project folder: ".evident/<feature>/<request>/explore".
       at: relative(dirname(dirname(dirname(request))), dirname(dirname(folder))), dir: rel(folder), found: true, step: basename(dirname(dirname(folder))),
       fixed: b.fix ? DONE.includes(status) : null, proven,
-      state: lost ? 'Fix made, change missing' : stateOf(status, proven, fixAsked),
+      state: b.fix?.invalid ? 'Not a bug' : lost ? 'Fix made, change missing' : stateOf(status, proven, fixAsked),
       // The same rules as the fix summary's `!` lines, so the page and the chat never disagree.
       // Once you decide (keep it, or ship a fix to review), the bug stops waiting on you.
       needsYou: !(b.fix?.decided && (status === 'wont-fix' || proven === 'proven')) && (lost || ['needs-decision', 'not-fixed', 'wont-fix'].includes(status) || proven === 'disproved' || Boolean(b.fix?.needsAttention)
@@ -250,26 +269,44 @@ export async function requestData(request) {
     bugs.splice(bugs.indexOf(b), 1);
   }
 
-  // Each round numbers its bugs from BUG-001: a later bug with a taken id is told apart by its step, in its label and its anchor.
-  const taken = new Set();
+  // Each round numbers its bugs from BUG-001: a later bug with a taken id says its round, so every id on the page is unique.
+  const taken = new Set(); const used = new Set();
   for (const b of bugs) {
     const twin = taken.has(b.id);
     taken.add(b.id);
-    Object.assign(b, { label: twin ? `${b.id} (${b.step})` : b.id, anchor: twin ? `${b.id}-${b.step}` : b.id });
+    let label = twin ? `${b.id} (round ${b.round}${/^proof/.test(b.step) ? ', from a test' : ''})` : b.id;
+    if (used.has(label)) label = `${b.id} (${b.step})`;
+    used.add(label);
+    Object.assign(b, { label, anchor: twin ? `${b.id}-${b.step}` : b.id });
   }
 
   // Checks proving a fix are counted with their bug; the others (a proof of a change, ledger re-checks) need you themselves.
   const linked = new Set(steps.filter((s) => s.kind === 'proof').flatMap((s) => { try { return readJson(join(s.dir, 'fix-claims.json')).map((l) => l.claim); } catch { return []; } }));
-  const promises = steps.filter((s) => (s.kind === 'proof' || s.kind === 'spec') && s.data?.claims).flatMap((s) => s.data.claims.map((c) => ({
-    id: c.id, statement: c.statement, verdict: s.checked ? c.verdict : 'checking', cases: c.cases ?? [],
+  const answered = answersOf(dirname(request));
+  const all = steps.filter((s) => (s.kind === 'proof' || s.kind === 'spec') && s.data?.claims).flatMap((s) => s.data.claims.map((c) => ({
+    // Where a "decide <id> of <step>" line points, and the user's decision on a check that failed or could not be proven.
+    at: relative(dirname(dirname(dirname(request))), s.dir), decided: answered.get(`${basename(request)}/${s.name}/${c.id}`)?.answer ?? null,
+    id: c.id, statement: c.statement, verdict: s.checked ? c.verdict : live ? 'checking' : 'not-run', cases: c.cases ?? [],
     // Each file keeps its case, device and note, so the page shows it under the case it proves.
     evidence: (c.evidence ?? []).map((l) => ({ ...l, file: `${s.name}/${l.file}` })), proof: c.proof ?? null, step: s.name, fixesBug: linked.has(c.id),
   })));
+  // A check proven again in a later step shows once, with its latest verdict; a later step still checking never hides one.
+  const latest = new Map();
+  const open = (v) => v === 'checking' || v === 'not-run';
+  for (const p of all) { const prev = latest.get(p.id); if (!prev || !open(p.verdict) || open(prev.verdict)) latest.set(p.id, p); }
+  const promises = [...latest.values()];
   const checks = (v) => promises.filter((p) => p.verdict === v).length;
-  const checksNeed = promises.filter((p) => !p.fixesBug && ['disproved', 'not-proven'].includes(p.verdict)).length;
+  // A check you decided on is in the skill's hands, not yours.
+  // What each item asks of you. `decide`: only a person can answer it. `retest`: the tool's own unfinished work (a test that could
+  // not run, a fix whose test did not finish), all answered at once by testing again. `optional`: settled, open to change
+  // (a bug left as it is). Counted as you would count them: each decision once, and the retests as one.
+  for (const b of bugs) b.ask = !b.needsYou ? null : /^Fix made, (could not be proven|waiting for proof)$/.test(b.state) ? 'retest'
+    : b.state === 'Fix made, being checked' ? null : b.state === "Won't fix" ? 'optional' : 'decide';
+  for (const p of promises) p.ask = p.fixesBug || p.decided ? null : p.verdict === 'disproved' ? 'decide' : p.verdict === 'not-proven' ? 'retest' : null;
+  const items = [...bugs, ...promises];
+  const checksNeed = items.filter((x) => x.ask === 'decide').length + (items.some((x) => x.ask === 'retest') ? 1 : 0);
 
   // Each question with the user's answer, when the feature's answers.jsonl has one.
-  const answered = answersOf(dirname(request));
   const questions = (s) => stepQuestions(s.dir).map((q) => ({ ...q, answer: answered.get(q.id)?.answer ?? null }));
   // What a step tested: each charter's mission, and a proof's or spec's checks.
   const tested = (s) => { let missions = []; try { missions = (readJson(join(s.dir, 'charters.json')).charters ?? []).filter((c) => c.mission).map((c) => c.mission); } catch {}
@@ -313,7 +350,7 @@ export async function requestData(request) {
       .flatMap((line) => { try { const l = JSON.parse(line); return l?.learning ? [[l.learning, l]] : []; } catch { return []; } }))).values()],
     stages,
     // A gap (a missing feature) is not a bug: it has its own count and group.
-    counts: { found: bugs.filter((b) => b.kind !== 'gap' && !b.unconfirmed && !b.withdrawn).length, gaps: bugs.filter((b) => b.kind === 'gap' && !b.unconfirmed && !b.withdrawn).length, unconfirmed: bugs.filter((b) => b.unconfirmed).length, fixed: bugs.filter((b) => b.fixed).length, proven: bugs.filter((b) => b.proven === 'proven').length, needsYou: bugs.filter((b) => b.needsYou).length + checksNeed, questions: steps.flatMap(questions).filter((q) => !q.answer).length,
+    counts: { found: bugs.filter((b) => b.kind !== 'gap' && !b.unconfirmed && !b.withdrawn).length, gaps: bugs.filter((b) => b.kind === 'gap' && !b.unconfirmed && !b.withdrawn).length, unconfirmed: bugs.filter((b) => b.unconfirmed).length, fixed: bugs.filter((b) => b.fixed).length, proven: bugs.filter((b) => b.proven === 'proven').length, needsYou: checksNeed, questions: steps.flatMap(questions).filter((q) => !q.answer).length,
       checks: promises.length, ownChecks: promises.filter((p) => !p.fixesBug).length, checksProven: checks('proven'), checksFailed: checks('disproved'), checksUnproven: checks('not-proven') },
     bugs, promises, auto, decisions, stopped, flaky, releaseNotes: notes,
     // Who approved what to check, when not auto mode: a person approved some proof's or spec's checks.
@@ -330,7 +367,7 @@ export async function requestData(request) {
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const KIND = { explore: 'Explore', prove: 'Proof', 'explore-and-fix': 'Explore and fix', improve: 'Self-improvement', fix: 'Fix' };
-const VERDICT = { proven: 'Proven', disproved: 'Failed', 'not-proven': 'Could not be proven', checking: 'Being checked' };
+const VERDICT = { proven: 'Passed', disproved: 'Failed', 'not-proven': 'No result', checking: 'Running', 'not-run': 'Not run' };
 const CASE = { pass: 'passed', fail: 'failed', blocked: 'could not run', 'not-run': 'not run yet' };
 const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 const VIDEO = /\.(webm|mp4)$/i;
@@ -347,20 +384,90 @@ const zone = (t) => new Date(t).toLocaleTimeString('en-GB', { timeZoneName: 'sho
 // A decisions.md ruling, "<what> — <why> — <cost if wrong>", in words.
 // "Why: auto mode" says nothing every choice does not already say, so it is left out.
 const ruling = (r, tag = '') => { const [what, why, cost] = String(r).split(' — '); const said = why && !/^auto mode$/i.test(why.trim());
-  return `${esc(what.charAt(0).toUpperCase() + what.slice(1))}${tag}${said ? `<br><span class="muted">Why: ${esc(why)}</span>` : ''}${cost ? `<br><span class="muted">If that was wrong: ${esc(cost)}</span>` : ''}`; };
+  return `${esc(what.charAt(0).toUpperCase() + what.slice(1))}${tag}${said ? `<br><span class="muted">Why: ${esc(why)}</span>` : ''}${cost && !/^none\.?$/i.test(cost.trim()) ? `<br><span class="muted">If that was wrong: ${esc(cost)}</span>` : ''}`; };
 
 // brief.md in plain words: its headings as labels, without the # marks.
 const plainBrief = (md) => md.trim().split('\n').map((l) => { const h = l.match(/^#+\s+(.*)$/); return h ? `<b>${esc(h[1])}</b>` : esc(l); }).join('\n');
 const clock = (t) => (t ? new Date(t).toTimeString().slice(0, 5) : '');
 const span = (ms) => { const m = Math.max(1, Math.round(ms / 60e3)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+// A long note shows its first sentence; the rest opens on a click.
+const brief = (text) => { const t = String(text ?? ''); const m = /^(.{40,180}?[.;:])\s+(.+)$/s.exec(t);
+  return t.length > 180 && m ? `${esc(m[1])} <details class="more-note"><summary>More</summary>${esc(m[2])}</details>` : esc(t); };
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const SEVERITY_ORDER = ['critical', 'major', 'minor', 'cosmetic'];
 const worstFirst = (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
 // Red only for what failed; amber for what waits on a person; indigo for work under way.
+// The words a reader sees for each state; the data keeps its own names, which other scripts read.
+const SAY = { 'Fixed and proven': 'Fixed and verified', 'Fix did not hold': "Fix didn't work", 'Fix made, being checked': 'Fixed, being tested',
+  'Fix made, waiting for proof': 'Fixed, waiting for its test', 'Fix made, could not be proven': "Fixed, test didn't finish", 'Fix made, change missing': 'Fixed, change missing', 'Fix not requested': 'Not fixed' };
+const said = (state) => SAY[state] ?? state;
+// The filter's groups, by what you do with a bug.
+const statusOf = (b) => (b.ask === 'retest' ? 'retest' : b.state === 'Fixed and proven' && !b.needsYou ? 'fixed' : /^Fix made|^Not attempted/.test(b.state) ? 'work' : b.ask === 'decide' ? 'need' : 'left');
+const KIND_SAY = { bug: 'Broken', usability: 'Hard to use', visual: 'Looks wrong', copy: 'Wording', accessibility: 'Accessibility', performance: 'Slow', security: 'Security', gap: 'Missing feature' };
+// A row of buttons that shows only some cards: by what you do with them, and by kind when there is more than one.
+function filterBar(d) {
+  // Only what is not one of your decisions: those are above, one at a time.
+  const bugs = d.bugs.filter((b) => b.ask !== 'decide'); const tests = d.promises.filter((p) => p.ask !== 'decide');
+  const count = (st) => bugs.filter((b) => statusOf(b) === st).length;
+  const rows = [['all', 'All', bugs.length + tests.length], ['fixed', 'Fixed', count('fixed')], ['work', 'In progress', count('work')],
+    ['retest', "Couldn't be checked", count('retest')], ['left', 'Not fixed', count('left')], ['test', 'Tests', tests.length]].filter(([v, , k]) => k || v === 'all');
+  const kinds = [...new Set(bugs.map((b) => b.kind ?? 'bug'))];
+  const button = (f, v, label, k) => `<button type="button" data-f="${f}" data-v="${esc(v)}" aria-pressed="${v === 'all'}">${esc(label)}${k === null ? '' : ` <span class="n">${k}</span>`}</button>`;
+  if (rows.length < 3 && kinds.length < 2) return '';
+  return `<nav class="filter" aria-label="Show only">${rows.map(([v, label, k]) => button('status', v, label, k)).join('')}${kinds.length > 1
+    ? `<span class="by">Kind:</span>${button('kind', 'all', 'Any', null)}${kinds.map((x) => button('kind', x, KIND_SAY[x] ?? x, bugs.filter((b) => (b.kind ?? 'bug') === x).length)).join('')}` : ''}</nav>`;
+}
+// One decision at a time: Back and Next move through them, and the place survives the live page's refresh. "Show all at once"
+// lists them all. Without scripts, they are all listed.
+const STEP_SCRIPT = `<script>
+(function () {
+  var sec = document.getElementById('decisions'); if (!sec) return;
+  var li = [].slice.call(sec.querySelectorAll('.todo > li')); if (li.length < 2) return;
+  var key = 'step:' + location.pathname, at = 0, all = false, prog = sec.querySelector('.progress'), nav = sec.querySelector('.step-nav');
+  try { at = Number(sessionStorage.getItem(key)) || 0; } catch (e) {}
+  var show = function () {
+    at = Math.max(0, Math.min(at, li.length - 1));
+    li.forEach(function (x, i) { x.hidden = !all && i !== at; var d = x.querySelector('details.bug'); if (d && i === at) d.open = true; });
+    prog.hidden = all; nav.hidden = false; prog.querySelector('.at').textContent = at + 1;
+    nav.querySelector('.back').disabled = all || at === 0;
+    var next = nav.querySelector('.next'); next.hidden = all; next.textContent = at === li.length - 1 ? 'Done: copy your answers' : 'Next decision';
+    nav.querySelector('.all').textContent = all ? 'One at a time' : 'Show all at once';
+    try { sessionStorage.setItem(key, String(at)); } catch (e) {}
+  };
+  nav.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.classList.contains('back')) at -= 1;
+    else if (b.classList.contains('next')) { if (at === li.length - 1) { var c = document.getElementById('copy-answers'); if (c) { c.click(); c.focus(); } return; } at += 1; sec.scrollIntoView({ block: 'start' }); }
+    else all = !all;
+    show();
+  });
+  show();
+})();
+</script>`;
+const FILTER_SCRIPT = `<script>
+(function () {
+  var bar = document.querySelector('.filter'); if (!bar) return;
+  var key = 'filter:' + location.pathname, st = { status: 'all', kind: 'all' };
+  try { st = JSON.parse(sessionStorage.getItem(key)) || st; } catch (e) {}
+  var all = function (q) { return [].slice.call(document.querySelectorAll(q)); };
+  var apply = function () {
+    all('.rest details.bug').forEach(function (c) { c.hidden = !((st.status === 'all' || c.dataset.status === st.status) && (st.kind === 'all' || c.dataset.kind === st.kind)); });
+    var on = st.status !== 'all' || st.kind !== 'all';
+    all('.rest details.group').forEach(function (g) { var any = g.querySelector('details.bug:not([hidden])'); g.hidden = !any; if (on && any && g.tagName === 'DETAILS') g.open = true; });
+    all('.filter button').forEach(function (b) { b.setAttribute('aria-pressed', String(st[b.dataset.f] === b.dataset.v)); });
+    try { sessionStorage.setItem(key, JSON.stringify(st)); } catch (e) {}
+  };
+  bar.addEventListener('click', function (e) { var b = e.target.closest('button'); if (!b) return; st[b.dataset.f] = b.dataset.v; apply(); });
+  apply();
+})();
+</script>`;
 const STATE_TONE = (b) => (b.state === 'Fix did not hold' ? 'need' : b.needsYou ? 'wait' : b.state === 'Fixed and proven' ? 'good' : /^Fix made/.test(b.state) ? 'run' : 'idle');
 const CHECK_TONE = { proven: 'good', disproved: 'need', 'not-proven': 'wait', checking: 'run' };
 const CASE_TONE = { pass: 'good', fail: 'need', blocked: 'wait' };
-const urgentFirst = (a, b) => ['need', 'wait'].indexOf(a.tone) - ['need', 'wait'].indexOf(b.tone) || worstFirst(a.item, b.item);
+// What blocks shipping first: a bug new on this branch, then one already in production, then one left as it is, then a failed
+// test, then one that could not run. Within each, a failed fix before a waiting one, then the worst.
+const rank = (x) => (x.state === undefined ? (x.verdict === 'disproved' ? 3 : 4) : x.state === "Won't fix" ? 2 : x.fix?.inProduction === true ? 1 : 0);
+const urgentFirst = (a, b) => rank(a.item) - rank(b.item) || ['need', 'wait'].indexOf(a.tone) - ['need', 'wait'].indexOf(b.tone) || worstFirst(a.item, b.item);
 
 // A bug's road as events: found, the fix, the proof, and a decision still open. Each has a tone and, when known, a time.
 function events(b) {
@@ -368,16 +475,22 @@ function events(b) {
   const t = b.times ?? {};
   const out = [{ tone: 'good', text: 'Found', short: 'found', at: t.found }];
   if (DONE.includes(fix.status)) out.push({ tone: 'good', text: 'Fix made', short: 'fixed', at: t.fixed, by: true });
-  else if (fix.status === 'not-fixed') out.push({ tone: 'need', text: 'Tried, then undone', short: 'fix undone', at: t.fixed, by: true });
+  else if (fix.status === 'not-fixed') out.push({ tone: 'need', text: 'Tried, then undone', short: 'fix undone', at: t.fixed });
   else if (fix.status === 'needs-decision') out.push({ tone: 'wait', text: 'Waiting for your decision', short: 'waiting for your decision', open: true });
   else if (fix.status === 'wont-fix') out.push({ tone: 'idle', text: "Won't fix", short: "won't fix" });
   else if (b.state === 'Not attempted yet') out.push({ tone: 'idle', text: 'Not attempted yet', short: 'not attempted yet', open: true });
-  const proof = { proven: ['good', 'Proof passed', 'proof passed'], disproved: ['need', 'Proof failed', 'proof failed'], checking: ['run', 'Being proven', 'being proven'], 'not-proven': ['wait', 'Could not be proven', 'could not be proven'] }[b.proven];
+  const proof = { proven: ['good', 'Test passed', 'test passed'], disproved: ['need', 'Test failed', 'test failed'], checking: ['run', 'Being tested', 'being tested'], 'not-proven': ['wait', "Test didn't finish", "test didn't finish"] }[b.proven];
   if (proof) out.push({ tone: proof[0], text: proof[1], short: proof[2], at: b.proven === 'checking' ? null : t.proof, claim: b.proofClaim });
   if (fix.decision && fix.status !== 'needs-decision') out.push({ tone: 'wait', text: 'Waiting for you', short: 'waiting for you', open: true });
   return out;
 }
-const trail = (b) => (b.state === 'Fix not requested' ? '' : `<span class="trail">${events(b).map((e) => `<span class="${e.tone}">${esc(e.short)}${e.at ? ` ${e.by ? 'by ' : ''}${clock(e.at)}` : ''}</span>`).join('<span class="arrow" aria-hidden="true"> → </span>')}</span>`);
+// The road in its own order: an undone fix comes after the proof that judged it, and a fix time later than its proof (the
+// change was put back after a search) shows no time, so no step reads as coming before its cause.
+const inOrder = (list) => { const undo = list.find((e) => e.short === 'fix undone'); const proof = list.find((e) => /^test |^being tested/.test(e.short));
+  const out = list.filter((e) => e !== undo).map((e) => (e.short === 'fixed' && proof?.at && e.at && new Date(e.at) > new Date(proof.at) ? { ...e, at: null } : e));
+  if (undo) out.splice(out.findIndex((e) => e.open) === -1 ? out.length : out.findIndex((e) => e.open), 0, undo);
+  return out; };
+const trail = (b) => (b.state === 'Fix not requested' ? '' : `<span class="trail">${inOrder(events(b)).map((e) => `<span class="${e.tone}">${esc(e.short)}${e.at ? ` ${e.by ? 'by ' : ''}${clock(e.at)}` : ''}</span>`).join('<span class="arrow" aria-hidden="true"> → </span>')}</span>`);
 
 // One bug: a summary line with its road, opening into what to decide, how to see it, the change, what users get and what happened.
 // "1", "1 and 2", "1, 2 and 3".
@@ -389,48 +502,50 @@ function bugRow(b, unchecked, open = false, rounds = false) {
   const tried = ['fixed', 'partly-fixed', 'not-fixed'].includes(fix.status);
   // A record that names a change file which is not on disk says so, rather than hiding the change.
   const missing = fix.patch && !b.patch ? `the change file the record names, <code>${esc(b.patchNamed ?? fix.patch)}</code>, is missing` : '';
-  const where = fix.status === 'not-fixed' ? (b.patch ? `Undone; the change file is kept: <a href="${esc(b.patch)}" target="_blank" rel="noopener">see the change</a>.` : missing ? `Undone; ${missing}.` : 'Undone; no change is left in the code.')
-    : fix.commit ? `Committed as <code>${esc(fix.commit)}</code>.` : b.patch ? `Kept as a change file, not committed: <a href="${esc(b.patch)}" target="_blank" rel="noopener">see the change</a>.` : missing ? `Not committed; ${missing}.` : '';
+  const where = fix.status === 'not-fixed' ? (b.patch ? `Undone; the change is saved: <a href="${esc(b.patch)}" target="_blank" rel="noopener">see it</a>.` : missing ? `Undone; ${missing}.` : 'Undone; no change is left in the code.')
+    : fix.commit ? `Committed as <code>${esc(fix.commit)}</code>.` : b.patch ? `Not committed yet: <a href="${esc(b.patch)}" target="_blank" rel="noopener">see the change</a>.` : missing ? `Not committed; ${missing}.` : '';
   // A recording shows the bug happen; a screenshot only where there is none.
   const shot = b.evidence.find((f) => VIDEO.test(f)) ?? b.evidence.find((f) => PICTURE.test(f));
   const others = b.evidence.filter((f) => f !== shot);
   const why = [fix.inProduction === true && 'it changes what production does', b.kind === 'security' && 'it is a security fix',
-    ['medium', 'high', 'very-high'].includes(fix.risk) && `${fix.risk} risk${fix.riskReason ? `: ${fix.riskReason.replace(/\.$/, '')}` : ''}`].filter(Boolean);
+    ['medium', 'high', 'very-high'].includes(fix.risk) && `${fix.risk.replace('-', ' ')} risk${fix.riskReason ? ` (${fix.riskReason.replace(/\.$/, '').replace(/^./, (x) => x.toLowerCase())})` : ''}`].filter(Boolean);
   const kind = decideKind(b);
-  const picks = kind ? field(`decide ${b.id} of ${b.at}`, `d-${b.anchor}`, `<legend class="sr">Your decision on ${esc(b.label ?? b.id)}</legend>`, CHOICES[kind], '') : '';
-  const decided = fix.decided ? `<p>You decided: <b>${esc(fix.decided)}</b></p>` : '';
-  const how = /^auto:/.test(fix.source ?? '') ? 'Auto mode decided' : 'Added in gap mode';
-  const chose = b.chosen && !b.needsYou ? `<div class="ask asks"><b>Chosen without you</b><p>${how}: <b>${esc(fix.source.replace(/^(auto|gap):\s*/, ''))}</b></p>${decided || picks}</div>` : '';
-  const review = b.needsYou && b.state === 'Fixed and proven' ? `<div class="ask asks"><b>Your call</b><p>${esc(`Review this fix before shipping${why.length ? `: ${why.join('; ')}` : ''}.`)}</p>${picks}</div>` : '';
+  const picks = kind ? field(`decide ${b.id} of ${b.at}`, `d-${b.anchor}`, `<legend class="sr">Decision for ${esc(b.label ?? b.id)}</legend>`, CHOICES[kind], '', kind === 'chosen' || b.ask !== 'decide') : '';
+  const decided = fix.decided && !kind ? `<p>You decided: <b>${esc(fix.decided)}</b></p>` : '';
+  const how = /^auto:/.test(fix.source ?? '') ? 'Decided automatically' : 'Added as a missing feature';
+  const chose = b.chosen && !b.needsYou ? `<div class="ask asks"><b>Decided without you</b><p>${how}: <b>${esc(fix.source.replace(/^(auto|gap):\s*/, ''))}</b></p>${decided || picks}</div>` : '';
+  const review = b.needsYou && b.state === 'Fixed and proven' ? `<div class="ask asks"><b>Your call</b><p>${esc(`Review this fix before you ship.${why.map((w) => ` ${w.charAt(0).toUpperCase()}${w.slice(1).replace(/\.$/, '')}.`).join('')}`)}</p>${picks}</div>` : '';
   const doubt = b.withdrawn ? `<div class="ask asks"><b>Withdrawn</b><p>${esc(`Its tester withdrew it: ${b.withdrawn}`)}</p></div>`
-    : b.unconfirmed ? `<div class="ask asks"><b>Not confirmed</b><p>${esc(`The evidence check says its own picture does not show it: ${b.unconfirmed}`)}</p></div>` : '';
-  const ask = doubt || review || chose || (fix.decision ? `<div class="ask asks"><b>Your call</b><p>${esc(fix.decision)}</p>${decided || picks}<p class="muted">${fix.status === 'needs-decision' ? 'Until you decide, it stays as it is.' : 'Until someone fixes it by hand, the bug stays.'}</p></div>` : '');
-  const lead = fix.status === 'needs-decision' ? 'No fix made' : fix.status === 'not-fixed' ? 'What the fixer tried, then undid' : 'The fix';
-  const change = b.fix ? `<section class="sec"><h4>Cause and change</h4><div>
-<p><b>${lead}:</b> ${esc(fix.summary)}</p>
+    : b.unconfirmed ? `<div class="ask asks"><b>Not confirmed</b><p>Its screenshot doesn't show the bug. ${brief(`Why: ${b.unconfirmed}`)}</p>${b.needsYou ? `<p>${esc(fix.decision ?? ASKED[kind] ?? '')}</p>${decided || picks}` : ''}</div>` : '';
+  const question = (fix.status === 'not-fixed' && undone(fix.decision)) || (fix.decision && kind !== 'unproven' ? fix.decision : ASKED[kind]);
+  const asked = question ?? fix.decision;
+  const ask = doubt || review || chose || (asked || decided ? `<div class="ask asks"><b>Your call</b>${asked ? `<p>${esc(asked)}</p>` : ''}${fix.earlier && picks ? `<p class="muted">You answered before: ${esc(fix.earlier)}</p>` : ''}${picks || decided}${fix.status === 'needs-decision' ? '<p class="muted">Until you decide, it stays as it is.</p>' : ''}</div>` : '');
+  const lead = fix.status === 'needs-decision' ? 'No fix made' : fix.status === 'not-fixed' ? 'Tried, then undone' : 'The fix';
+  const change = b.fix ? `<section class="sec"><h4>What was changed</h4><div>
+<p><b>${lead}:</b> ${esc(fix.summary)}${fix.status === 'not-fixed' && b.patch ? ` <a href="${esc(b.patch)}" target="_blank" rel="noopener">See the change</a>` : ''}</p>
 ${fix.files?.length ? `<p class="chips">${fix.files.map((f) => `<code>${esc(f)}</code>`).join('')}</p>` : ''}
 ${fix.status === 'needs-decision' || !(fix.rootCause || fix.risk || (where && tried)) ? '' : `<div class="facts">${fix.rootCause ? `<div><small>Cause</small>${esc(fix.rootCause)}</div>` : ''}
-${fix.risk ? `<div><small>Risk of the change</small>${esc(fix.risk)}${fix.riskReason ? `: ${esc(fix.riskReason)}` : ''}</div>` : ''}
-${where && tried ? `<div><small>State of the code</small>${where}</div>` : ''}</div>`}
-${fix.impact?.existingUsers ? `<p><b>For people already using it:</b> ${esc(fix.impact.existingUsers)}</p>` : ''}
+${fix.risk ? `<div><small>Risk</small>${esc(fix.risk)}${fix.riskReason ? `: ${esc(fix.riskReason)}` : ''}</div>` : ''}
+${where && tried && fix.status !== 'not-fixed' ? `<div><small>Where the change is</small>${where}</div>` : ''}</div>`}
+${fix.impact?.existingUsers ? `<p><b>What current users will notice:</b> ${esc(fix.impact.existingUsers)}</p>` : ''}
 ${b.fixedIn ? `<p>Worked on in <a href="../${esc(b.fixedIn)}/report.html">${esc(b.fixedIn)}</a>.</p>` : ''}</div></section>`
-    : b.fixedIn ? `<section class="sec"><h4>Cause and change</h4><p>Worked on in <a href="../${esc(b.fixedIn)}/report.html">${esc(b.fixedIn)}</a>.</p></section>` : '';
+    : b.fixedIn ? `<section class="sec"><h4>What was changed</h4><p>Worked on in <a href="../${esc(b.fixedIn)}/report.html">${esc(b.fixedIn)}</a>.</p></section>` : '';
   // Whether it blocks shipping, in words near the top: a skimmer misses a chip. A new bug stops saying so once its fix is proven.
-  const ships = fix.inProduction === true ? '<p class="ships">Already in production: it does not block shipping.</p>'
-    : fix.inProduction === false && b.state !== 'Fixed and proven' ? '<p class="ships">New on this branch: shipping now would add it.</p>' : '';
-  const proved = b.proofClaim ? `<p>Proved by check <a href="#${esc(b.proofClaim)}">${esc(b.proofClaim)}</a>.</p>` : '';
+  const ships = fix.inProduction === true ? '<p class="ships">Already in the live app, so it doesn\'t block this release.</p>'
+    : fix.inProduction === false && b.state !== 'Fixed and proven' ? '<p class="ships">New in this change: shipping now would add it.</p>' : '';
+  const proved = b.proofClaim ? `<p>Its test: <a href="#${esc(b.proofClaim)}">${esc(b.proofClaim)}</a>.</p>` : '';
   // Open, a card is what you decide and how to see the bug; the rest waits under Details. The row's trail says what happened.
-  return `<details class="bug ${t}" id="${esc(b.anchor)}"${open ? ' open' : ''}><summary>
+  return `<details class="bug ${t}" id="${esc(b.anchor)}" data-status="${statusOf(b)}" data-kind="${esc(b.kind ?? 'bug')}"${open ? ' open' : ''}><summary>
 <span class="head"><span class="title">${esc(b.title)}</span>
-<span class="id">${esc(rounds ? b.id : b.label ?? b.id)}</span>${rounds ? `<span class="round">${((r) => (r.length > 1 ? `Rounds ${joined(r)}` : `Round ${r[0]}`))([...new Set([b.round, ...(b.again ?? []).map((a) => a.round)])].sort((x, y) => x - y))}</span>` : ''}${b.surface ? `<span class="where">${esc(b.surface)}</span>` : ''}${fix.inProduction === true ? '<span class="prod">already in production</span>' : ''}<span class="sev ${esc(b.severity)}">${esc(b.severity ?? '')}</span>
-${b.state === 'Fix not requested' ? '' : `<span class="state ${t}">${esc(b.state)}</span>`}</span>
+<span class="id">${esc(b.label ?? b.id)}</span>${b.surface ? `<span class="where">${esc(b.surface)}</span>` : ''}${fix.inProduction === true ? '<span class="prod">already live</span>' : ''}<span class="sev ${esc(b.severity)}">${esc(b.severity ?? '')}</span>
+${b.state === 'Fix not requested' ? '' : `<span class="state ${t}">${esc(said(b.state))}</span>`}</span>
 ${trail(b)}</summary>
 <div class="file">${ask}${ships}${b.again ? `<p class="muted">Found in round ${b.round} as ${esc(b.id)}, and again in ${joined(b.again.map((a) => `round ${a.round} as ${esc(a.id)}`))}.</p>` : ''}
-<section class="sec"><h4>Reproduce</h4><div class="repro${shot ? '' : ' bare'}">
+<details class="see"><summary>How it happens</summary><section class="sec"><div class="repro${shot ? '' : ' bare'}">
 ${shot ? `<figure class="shot">${shown(shot)}<figcaption>${esc(shot.split('/').pop())}${b.times?.found ? `, ${clock(b.times.found)}` : ''}</figcaption></figure>` : ''}
 <div>${b.seenAs ? `<p class="seen">Seen as ${esc(b.seenAs)}</p>` : ''}${b.evidence.length ? '' : '<p class="muted">No screenshots or files were saved for this bug.</p>'}
 <ol class="steps">${b.steps.map((x) => `<li>${esc(x)}</li>`).join('')}</ol></div>
-<div class="vs"><div class="e"><small>Expected</small>${esc(b.expected)}</div><div class="a"><small>Actual</small>${esc(b.actual)}</div></div></div></section>
+<div class="vs"><div class="e"><small>Expected</small>${esc(b.expected)}</div><div class="a"><small>Actual</small>${esc(b.actual)}</div></div></div></section></details>
 <details class="more"><summary>Details</summary>
 ${change}${proved}
 <p class="foot">${esc(b.label ?? b.id)}: <a href="${esc(b.dir)}/bug.json" target="_blank" rel="noopener">full bug record</a>${others.length ? `. Other files: ${others.map((f) => `${shown(f)}${unchecked.includes(f) ? UNCHECKED : ''}`).join(', ')}` : ''}</p>
@@ -467,16 +582,35 @@ function checkRow(p, open = false) {
   const pips = p.cases.map((c) => `<i class="${CASE_TONE[c.result] ?? 'idle'}"></i>`).join('');
   const failed = p.cases.filter((c) => c.result === 'fail').map((c) => c.id);
   const blocked = p.cases.filter((c) => c.result === 'blocked').map((c) => c.id);
-  const line = [failed.length && `fails at ${failed.join(', ')}`, blocked.length && `could not run ${blocked.join(', ')}`, p.verdict === 'checking' ? `${passed} passed so far` : `${passed} of ${p.cases.length} passed`].filter(Boolean).join(' · ');
+  // Counts, not case letters: a letter means nothing until the card is open.
+  const why = p.cases.find((c) => c.result === 'blocked')?.note;
+  const line = p.verdict === 'not-proven' && !failed.length ? `Couldn't run${why ? `: ${String(why).split(/(?<=[.;])\s/)[0].replace(/[.;]$/, '')}` : ''}`
+    : [failed.length && `${failed.length} of ${p.cases.length} ${p.cases.length === 1 ? 'step' : 'steps'} failed`, blocked.length && `${blocked.length} couldn't run`, p.verdict === 'checking' && `${passed} passed so far`].filter(Boolean).join(' · ') || `${passed} of ${p.cases.length} passed`;
   const notTested = p.verdict === 'not-proven' && /^will not:/i.test(p.proof ?? '') ? `<p class="why">Not tested: ${esc(p.proof.replace(/^will not:\s*/i, '').replace(/\.?$/, '.'))}</p>` : '';
   const row = (c) => { const tone = CASE_TONE[c.result] ?? 'idle'; const files = p.evidence.filter((f) => f.case === c.id);
     return `<li><details class="case ${tone}"${['fail', 'blocked'].includes(c.result) ? ' open' : ''}><summary><b class="mark"></b>${esc(c.id)}. ${esc(c.do ?? '')}${c.bug ? ` <span class="bugid">${esc(c.bug)}</span>` : ''}</summary>
 ${c.expect || c.actual ? `<dl class="vs2">${c.expect ? `<dt>Expected</dt><dd>${esc(c.expect)}</dd>` : ''}${c.actual ? `<dt>Got</dt><dd class="got">${esc(c.actual)}</dd>` : ''}</dl>` : ''}${
-      c.note ? `<p class="note">${c.result === 'blocked' ? 'Why it could not run' : "Tester's note"}: ${esc(c.note)}</p>` : ''}${caseEvidence(files)}</details></li>`; };
-  return `<details class="bug check ${t}" id="${esc(p.id)}"${open ? ' open' : ''}><summary><span class="head"><span class="state ${t}">${esc(VERDICT[p.verdict] ?? p.verdict)}</span><span class="title">${esc(p.statement)}</span><span class="id">${esc(p.id)}</span>
+      c.note ? `<div class="note">${c.result === 'blocked' ? 'Why it could not run' : "Tester's note"}: ${brief(c.note)}</div>` : ''}${caseEvidence(files)}</details></li>`; };
+  return `<details class="bug check ${t}" id="${esc(p.id)}" data-status="${p.ask === 'decide' ? 'need' : 'test'}" data-kind="test"${open ? ' open' : ''}><summary><span class="head"><span class="state ${t}">${esc(VERDICT[p.verdict] ?? p.verdict)}</span><span class="title">${esc(p.statement)}</span><span class="id">${esc(p.id)}</span>
 ${p.cases.length > 1 ? `<span class="pips" role="img" aria-label="${passed} of ${p.cases.length} cases passed">${pips}</span>` : ''}</span><span class="trail">${esc(line)}</span></summary>
-<div class="file">${notTested}<ol class="cases">${p.cases.map(row).join('')}</ol></div></details>`;
+<div class="file">${checkAsk(p)}${notTested}<ol class="cases">${p.cases.map(row).join('')}</ol></div></details>`;
 }
+
+// The tool's unfinished work as one decision: test everything that could not be checked again, in one click.
+function retestAsk(items) {
+  if (!items.length) return '';
+  const fixes = items.filter((x) => x.state !== undefined).length, tests = items.length - fixes;
+  const what = [tests && plural(tests, "test that couldn't run", "tests that couldn't run"), fixes && plural(fixes, "fix whose test didn't finish", "fixes whose tests didn't finish")].filter(Boolean).join(' and ');
+  const lines = items.map((x) => `decide ${x.id} of ${x.at}`).join('\n');
+  return `<div class="ask asks retest"><b>Test again?</b><p>${esc(`${what.charAt(0).toUpperCase()}${what.slice(1)}. Nothing is wrong with them that we know of; they just need another run.`)}</p>
+<fieldset data-line="retest" data-lines="${esc(lines)}"><legend class="sr">Test them again</legend>${['Test again', 'Not now'].map((a) => `<label class="pick"><input type="radio" name="retest" value="${a}"><span>${a === 'Test again' ? `Test all ${items.length} again` : 'Not now'}</span></label>`).join('')}</fieldset></div>`;
+}
+
+// A check of its own that failed or could not be proven waits on you like a bug: each choice is a chat line decide.mjs acts on.
+const CHECK_CHOICES = { disproved: ['Fix the app', 'Test again', 'Drop this test'], 'not-proven': ['Test again', 'Drop this test'] };
+const checkAsk = (p) => (p.fixesBug || !CHECK_CHOICES[p.verdict] ? '' : p.decided ? `<div class="ask asks"><b>Your call</b><p>You decided: <b>${esc(p.decided)}</b></p></div>`
+  : `<div class="ask asks"><b>Your call</b><p>${p.verdict === 'disproved' ? 'This test failed. Fix the app, test again, or drop the test if it is wrong?' : 'This test gave no result. Test again, or drop it?'}</p>${
+    field(`decide ${p.id} of ${p.at}`, `d-${p.step}-${p.id}`, `<legend class="sr">Decision for ${esc(p.id)}</legend>`, CHECK_CHOICES[p.verdict], '', p.ask !== 'decide')}</div>`);
 
 // The page's first answer, in sentences: what happened, and whether anything waits on you.
 function answer(d) {
@@ -484,17 +618,9 @@ function answer(d) {
   const say = [];
   const n = (state) => d.bugs.filter((b) => b.state === state).length;
   if (d.bugs.some((b) => b.state !== 'Fix not requested')) {
-    say.push(`${n('Fixed and proven')} of ${plural(d.bugs.length, 'bug', 'bugs')} fixed and proven.`);
-    if (n('Fix did not hold')) say.push(`${n('Fix did not hold')} ${n('Fix did not hold') === 1 ? 'fix' : 'fixes'} did not hold.`);
-    // A proven fix still needs you when it changes what production does or carries risk: name them, so the count adds up.
-    const review = d.bugs.filter((b) => b.needsYou && b.state === 'Fixed and proven').length;
-    if (review) say.push(`${plural(review, 'proven fix waits', 'proven fixes wait')} for your review.`);
-    if (n('Waiting for your decision')) say.push(`${n('Waiting for your decision')} ${n('Waiting for your decision') === 1 ? 'waits' : 'wait'} for your decision.`);
-    if (n('Fix made, being checked')) say.push(`${plural(n('Fix made, being checked'), 'fix is', 'fixes are')} being checked.`);
-    if (n('Fix made, waiting for proof')) say.push(`${plural(n('Fix made, waiting for proof'), 'fix waits', 'fixes wait')} for proof.`);
-    if (n('Fix made, could not be proven')) say.push(`${plural(n('Fix made, could not be proven'), 'fix', 'fixes')} could not be proven.`);
-    if (n('Fix made, change missing')) say.push(`${plural(n('Fix made, change missing'), 'fix has', 'fixes have')} no change to ship: the change file is missing.`);
-    if (n('Not attempted yet')) say.push(`${n('Not attempted yet')} not attempted yet.`);
+    // What the run got done, in one sentence: what waits on you is the list above.
+    say.push(`Found ${plural(d.bugs.length, 'bug', 'bugs')}; ${n('Fixed and proven')} fixed and verified so far.`);
+    if (d.live && n('Fix made, being checked')) say.push(`${plural(n('Fix made, being checked'), 'fix is', 'fixes are')} still being tested.`);
   } else if (d.bugs.length) {
     const found = d.bugs.filter((b) => b.kind !== 'gap' && !b.unconfirmed && !b.withdrawn);
     const sev = SEVERITY_ORDER.map((x) => [x, found.filter((b) => b.severity === x).length]).filter(([, k]) => k).map(([x, k]) => `${k} ${x}`);
@@ -506,19 +632,35 @@ function answer(d) {
     const withdrawn = d.bugs.filter((b) => b.withdrawn).length;
     if (withdrawn) say.push(`${plural(withdrawn, 'bug was', 'bugs were')} withdrawn by ${withdrawn === 1 ? 'its' : 'their'} tester.`);
   }
-  if (c.checks && d.promises.some((p) => !p.fixesBug)) {
-    say.push(`${c.checksProven} of ${plural(c.checks, 'check', 'checks')} proven.`);
-    if (c.checksFailed) say.push(`${c.checksFailed} failed.`);
-    if (c.checksUnproven) say.push(`${c.checksUnproven} could not be proven.`);
-  }
+  // A proof with no bugs says how its tests went; a run that fixed bugs counts its tests in the list of what needs you.
+  if (c.checks && !d.bugs.length) say.push(`${c.checksProven} of ${plural(c.checks, 'test', 'tests')} passed.`);
   if (!say.length) say.push(d.steps.length ? 'Nothing found yet.' : 'Nothing has run yet.');
   const asked = d.steps.flatMap((s) => s.questions).filter((q) => !q.answer).length;
   // A live run says what already waits on you, then that it is still running.
-  const waiting = [c.needsYou && `${plural(c.needsYou, 'thing needs', 'things need')} you${d.live ? '' : ' before shipping'}.`,
-    asked && `${plural(asked, 'question waits', 'questions wait')} for you.`].filter(Boolean).join(' ');
-  const need = d.live ? [waiting, 'Still running.'].filter(Boolean).join(' ') : waiting || 'Nothing needs you.';
+  // The decisions, each once and in the reader's words; the tool's unfinished work is one decision; a settled bug is optional.
+  const decide = d.bugs.filter((b) => b.ask === 'decide'); const tests = d.promises.filter((p) => p.ask === 'decide');
+  const retest = [...d.bugs, ...d.promises].filter((x) => x.ask === 'retest'); const optional = d.bugs.filter((b) => b.ask === 'optional');
+  const by = (test) => decide.filter(test).length;
+  const parts = [[by((b) => b.state === 'Fixed and proven'), (k) => `Review ${plural(k, 'fix', 'fixes')}`],
+    [by((b) => b.state === 'Fix did not hold'), (k) => `Retry or leave ${plural(k, "fix that didn't work", "fixes that didn't work")}`],
+    [by((b) => b.state === 'Fix made, change missing'), (k) => `Redo or drop ${plural(k, 'fix whose change is missing', 'fixes whose changes are missing')}`],
+    [by((b) => !['Fixed and proven', 'Fix did not hold', 'Fix made, change missing'].includes(b.state)), (k) => `Decide what to do with ${plural(k, 'bug', 'bugs')}`],
+    [tests.length, (k) => `Fix, retest or drop ${plural(k, 'failed test', 'failed tests')}`],
+    [asked, (k) => `Answer ${plural(k, 'question', 'questions')}`],
+    [retest.length, (k) => `Test again ${k === 1 ? "the 1 thing that couldn't be checked" : `the ${k} things that couldn't be checked`} (one click)`]].filter(([k]) => k).map(([k, say]) => say(k));
+  // One number, the same one the answer bar counts.
+  const total = c.needsYou + asked;
+  const waiting = total ? `${plural(total, 'decision waits', 'decisions wait')} for you${d.live ? '' : ' before you ship'}.` : '';
+  const later = optional.length ? `Optional: ${plural(optional.length, 'bug was', 'bugs were')} left as ${optional.length === 1 ? 'it is' : 'they are'}; you can still ask for a fix.` : '';
+  const need = d.live ? [waiting, 'Still running.'].filter(Boolean).join(' ') : waiting || 'Ready to ship: nothing needs you.';
   const failed = d.bugs.some((b) => b.state === 'Fix did not hold') || (c.checksFailed > 0 && d.promises.some((p) => !p.fixesBug && p.verdict === 'disproved'));
-  return { text: say.join(' '), need, tone: d.live ? (waiting ? 'wait' : 'run') : failed ? 'need' : c.needsYou || asked ? 'wait' : 'good' };
+  return { text: say.join(' '), need, parts: total ? parts : [], later, tone: d.live ? (waiting ? 'wait' : 'run') : failed ? 'need' : total ? 'wait' : 'good' };
+}
+
+// The page's headline as chat lines, so what a run says in chat is what its page says, count for count.
+export async function headline(request) {
+  const a = answer(await requestData(request));
+  return [a.need, ...a.parts.map((p) => `- ${p}`), a.later].filter(Boolean);
 }
 
 // The run to scale: one band per stage, as long as its steps took. With a time missing, equal bands and no minutes.
@@ -535,7 +677,7 @@ function ribbon(d) {
   return `<ol class="ribbon">${bands.map((b) => {
     const sized = toScale && b.steps && b.label !== 'Done';
     // Clock times and the commit each step ran on, so every verdict traces to the code and the hour it was seen.
-    const words = `${sized ? `<span>${span(b.ms)}${b.running ? ' so far' : ''}</span>` : ''}${b.from ? `<span class="clock">${clock(b.from)}–${b.running ? 'now' : clock(b.to)}</span>` : ''}${b.commits.length ? `<span class="clock">${b.commits.map(esc).join(', ')}</span>` : ''}`;
+    const words = `${sized ? `<span>${span(b.ms)}${b.running ? ' so far' : ''}</span>` : ''}${b.from ? `<span class="clock">${clock(b.from)}–${b.running ? 'now' : clock(b.to)}</span>` : ''}`;
     return `<li class="band ${esc(b.state)}${b.running ? ' running' : ''}${sized ? '' : ' fixed'}" style="${sized ? `flex:${Math.max(1, Math.round(b.ms / 60e3))} 1 0` : ''}"><b>${esc(b.label)}</b>${words}</li>`;
   }).join('')}</ol>`;
 }
@@ -549,19 +691,36 @@ function counters(d) {
   return `<p class="counts">${[...list, `${c.needsYou} ${c.needsYou === 1 ? 'needs' : 'need'} you`].filter(Boolean).map(esc).join(' · ')}</p>`;
 }
 
-const STRIP_WORDS = { bug: { need: 'Fix did not hold', wait: 'Waiting for you', run: 'In progress', good: 'Fixed and proven', idle: 'No fix requested' },
-  check: { need: 'Failed', wait: 'Could not be proven', run: 'Being checked', good: 'Proven', idle: 'Not run' } };
+
 
 // The answer form's fields: the skill's suggestions to pick and a field for the person's own words. Each field carries the start
 // of its chat line ("answer Q-1a2b", "decide BUG-003 of <step folder>"), which the skill records. The page itself writes nothing back.
-const field = (line, name, legend, picks, hint) => `<fieldset data-line="${esc(line)}">${legend}${picks.length
+// An optional field (undoing a choice made without you) is copied like the others but never counted as waiting on you.
+const field = (line, name, legend, picks, hint, optional = false) => `<fieldset data-line="${esc(line)}"${optional ? ' data-optional' : ''}>${legend}${picks.length
   ? `${hint}${picks.map((a) => `<label class="pick"><input type="radio" name="${esc(name)}" value="${esc(a)}"><span>${esc(a)}</span></label>`).join('')}` : ''}<input type="text" name="${esc(name)}-own" placeholder="${picks.length ? 'Or write your own answer' : 'Your answer'}" aria-label="Your answer to ${esc(name)}"></fieldset>`;
-const askForm = (questions) => `<div class="asks">${questions.map((q) => field(`answer ${q.id}`, q.id, `<legend><code>${esc(q.id)}</code> ${esc(q.note)}</legend>`, q.answers, '<p class="suggest">Possible answers, suggested by the skill, not decided:</p>')).join('')}</div>`;
+// A question that opens with where it comes from ("Owner decision docs/x.md:105: ...") shows the question first, the source after.
+const SOURCE = /^(?:Owner decisions? )?((?:\S+\.md|spec):\d+(?: \([^)]*\))?(?:,? and (?:\S+\.md|spec):\d+(?: \([^)]*\))?)*)(?::\s*|\s+name this\.\s*)/;
+const question = (note) => { const m = SOURCE.exec(note ?? ''); if (!m) return esc(note);
+  const rest = note.slice(m[0].length); return `${esc(rest.charAt(0).toUpperCase() + rest.slice(1))} <span class="muted">(${esc(m[1])})</span>`; };
+const askForm = (questions) => `<div class="asks">${questions.map((q) => field(`answer ${q.id}`, q.id, `<legend><code>${esc(q.id)}</code> ${question(q.note)}</legend>`, q.answers, '<p class="suggest">Suggested answers, not decided:</p>')).join('')}</div>`;
 // What you can answer on a bug that waits on you; each choice is a chat line fix-and-prove acts on.
-const CHOICES = { 'needs-decision': ['Yes, change it', 'No, keep it as it is'], 'not-fixed': ['Try again', 'Leave it as it is'], 'wont-fix': ['Fix it anyway', 'Leave it as it is'], review: ['Ship it', 'Undo the fix'], chosen: ['Undo the fix'] };
-const decideKind = (b) => (b.fix?.decided ? null : !b.needsYou ? (b.chosen && b.state === 'Fixed and proven' ? 'chosen' : null) : b.state === 'Fixed and proven' ? 'review' : CHOICES[b.fix?.status] ? b.fix.status : null);
+// "Not a bug" is on every bug: it works as intended. Your words in the box beside it become the reason, which later runs follow.
+const CHOICES = { 'needs-decision': ['Yes, change it', 'No, keep it as it is', 'Not a bug'], 'not-fixed': ['Try again', 'Leave it as it is', 'Not a bug'], 'wont-fix': ['Fix it anyway', 'Leave it as it is', 'Not a bug'], review: ['Ship it', 'Undo the fix', 'Not a bug'], chosen: ['Undo the fix'],
+  unproven: ['Test again', 'Ship it', 'Undo the fix', 'Not a bug'], other: ['Fix it', 'Leave it as it is', 'Not a bug'] };
+// Every bug that waits on you gets choices, so the page never counts something you cannot answer.
+// A decision answers the question it was asked: once a fix you asked for is made, its review is a new question.
+const answered = (b) => b.fix?.decided && !(/^Fix(ed and proven| made)/.test(b.state) && !['Ship it', 'Undo the fix'].includes(b.fix.decided));
+const decideKind = (b) => (answered(b) ? null : !b.needsYou ? (b.chosen && b.state === 'Fixed and proven' ? 'chosen' : null) : b.state === 'Fixed and proven' ? 'review'
+  : b.state === 'Fix made, change missing' ? 'not-fixed' : /^Fix made/.test(b.state) ? 'unproven' : CHOICES[b.fix?.status] ? b.fix.status : 'other');
+// The fixer's "The fix did not hold: <a test it broke>. Fix by hand?" in plain words, asked the way the buttons answer it.
+// "The fix did not hold: X" means its own test still failed; "Broke X" means it broke another one.
+const undone = (d) => { const m = /^(The fix did not hold|Broke)[:\s]+(.*?)\.?\s*(?:Fix (?:it )?by hand\?)?$/s.exec(d ?? ''); if (!m) return null;
+  const what = m[2].replace(/\.$/, '');
+  return m[1] === 'Broke' ? `The fix broke something else, so it was undone: "${what}". Try the fix again, or leave it?` : `The fix didn't work: its test still fails ("${what}"). Try again, or leave it?`; };
+const ASKED = { unproven: 'The fix is in, but its test gave no result. Test again, ship it, or undo it?', 'wont-fix': 'It was left as it is. Fix it anyway, or leave it?',
+  'not-fixed': 'No fix is in the code. Try again, or leave it?', other: 'Fix it, or leave it as it is?' };
 // One bar for every answer on the page: it stays at the bottom of the screen while you pick.
-const SEND = `<div class="asks send"><p class="copy"><button type="button" id="copy-answers">Copy answers</button> <span class="muted" id="copy-state" role="status">Pick answers above, then copy them into chat.</span></p>
+const SEND = `<div class="asks send"><p class="copy"><button type="button" id="copy-answers">Copy answers</button> <span class="muted" id="copy-state" role="status">Pick answers, then copy them into chat.</span></p>
 <textarea id="answer-lines" readonly rows="2" aria-label="Answers to paste in chat" placeholder="The lines to paste in chat show here."></textarea></div>`;
 
 // Keeps picks across the live page's 5-second refresh; browser storage can be missing, so every use is guarded.
@@ -569,28 +728,39 @@ const ASK_SCRIPT = `<script>
 (function () {
   var qs = [].slice.call(document.querySelectorAll('[data-line]')); if (!qs.length) return;
   var out = document.getElementById('answer-lines'), state = document.getElementById('copy-state'), key = 'answers:' + location.pathname;
-  var own = function (f) { return f.querySelector('input[type=text]'); };
+  var own = function (f) { return f.querySelector('input[type=text]') || { value: '' }; };
   var radios = function (f) { return [].slice.call(f.querySelectorAll('input[type=radio]')); };
-  var valueOf = function (f) { var r = f.querySelector('input[type=radio]:checked'); return own(f).value.trim() || (r ? r.value : ''); };
+  var valueOf = function (f) { var r = f.querySelector('input[type=radio]:checked'), t = own(f).value.trim();
+    if (r && r.value === 'Not a bug') return t ? 'Not a bug: ' + t : 'Not a bug';
+    return t || (r ? r.value : ''); };
   var render = function () {
-    out.value = qs.filter(valueOf).map(function (f) { return f.dataset.line + ': ' + valueOf(f); }).join('\\n');
+    // A bundle (data-lines) answers each of its lines at once; "Not now" adds none.
+    out.value = qs.filter(valueOf).reduce(function (a, f) { var v = valueOf(f); return a.concat(f.dataset.lines ? (v === 'Not now' ? [] : f.dataset.lines.split('\\n').map(function (l) { return l + ': ' + v; })) : [f.dataset.line + ': ' + v]); }, []).join('\\n');
+    var n = out.value ? out.value.split('\\n').length : 0;
+    var need = qs.filter(function (f) { return !('optional' in f.dataset); }), done = need.filter(valueOf).length, extra = n - done;
+    extra = qs.filter(valueOf).length - done;
+    state.textContent = done || extra ? done + ' of ' + need.length + ' decided' + (extra ? ' (and ' + extra + ' optional)' : '') + '. Copy, then paste in chat.' : 'Pick answers, then copy them into chat.';
     var saved = {}; qs.forEach(function (f) { saved[f.dataset.line] = valueOf(f); });
     try { localStorage.setItem(key, JSON.stringify(saved)); } catch (e) {}
   };
   document.addEventListener('input', function (e) {
     var f = e.target.closest('[data-line]'); if (!f) return;
-    if (e.target.type === 'radio') own(f).value = ''; else radios(f).forEach(function (r) { r.checked = false; });
-    state.textContent = ''; render();
+    // Words beside "Not a bug" are its reason; beside any other choice they replace it.
+    var bug = f.querySelector('input[value="Not a bug"]:checked');
+    if (e.target.type === 'radio') { if (e.target.value !== 'Not a bug') own(f).value = ''; } else if (!bug) radios(f).forEach(function (r) { r.checked = false; });
+    var box = f.querySelector('input[type=text]'); if (box) box.placeholder = f.querySelector('input[value="Not a bug"]:checked') ? 'Why it is not a bug (optional)' : 'Or write your own answer';
+    render();
   });
   try {
     var saved = JSON.parse(localStorage.getItem(key) || '{}');
-    qs.forEach(function (f) { var v = saved[f.dataset.line]; if (!v) return; var r = radios(f).filter(function (x) { return x.value === v; })[0]; if (r) r.checked = true; else own(f).value = v; });
+    qs.forEach(function (f) { var v = saved[f.dataset.line]; if (!v) return; var m = /^Not a bug(?:: ([\\s\\S]*))?$/.exec(v); if (m) { v = 'Not a bug'; own(f).value = m[1] || ''; }
+      var r = radios(f).filter(function (x) { return x.value === v; })[0]; if (r) r.checked = true; else own(f).value = v; });
   } catch (e) {}
   render();
   document.getElementById('copy-answers').addEventListener('click', function () {
     if (!out.value) { state.textContent = 'Pick or write an answer first.'; return; }
     var n = out.value.split('\\n').length, done = function () { state.textContent = 'Copied ' + n + (n === 1 ? ' answer' : ' answers') + ': paste them in chat.'; };
-    var fallback = function () { out.select(); try { document.execCommand('copy'); done(); } catch (e) { state.textContent = 'Select the lines below and copy them.'; } };
+    var fallback = function () { out.select(); try { document.execCommand('copy'); done(); } catch (e) { out.parentNode.classList.add('show'); state.textContent = 'Select the lines below and copy them.'; } };
     if (navigator.clipboard) navigator.clipboard.writeText(out.value).then(done, fallback); else fallback();
   });
 })();
@@ -630,26 +800,30 @@ export function pageHtml(d) {
   const started = d.begun ? `${new Date(d.begun).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} at ${clock(d.begun)} ${zone(d.begun)}` : d.date ?? '';
   const a = answer(d);
   // What was and was not tested, each with the step it comes from.
-  const from = (s) => ` <span class="muted">(while ${esc({ spec: 'planning', explore: 'exploring', fix: 'fixing', proof: 'proving' }[s.kind] ?? s.name)})</span>`;
-  const tested = d.steps.flatMap((s) => (s.tested ?? []).map((n) => `${esc(n)}${from(s)}`));
-  const notTested = d.steps.flatMap((s) => [...s.notCovered.map((n) => n.replace(/^T\d+: /, '')), ...(s.willNotProve ? [s.willNotProve] : [])].map((n) => `${esc(n)}${from(s)}`));
+  const from = (s) => ` <span class="muted">(while ${esc({ spec: 'planning', explore: 'exploring', fix: 'fixing', proof: 'testing' }[s.kind] ?? s.name)})</span>`;
+  // Each once, without tester codes ("N1: ") or a batch's leftovers, which say nothing about the app.
+  const seen = new Set();
+  const once = (n) => { const k = n.toLowerCase().replace(/\W+/g, ' ').trim(); if (seen.has(k)) return false; seen.add(k); return true; };
+  const tested = d.steps.flatMap((s) => (s.tested ?? []).filter(once).map((n) => `${esc(n)}${from(s)}`));
+  const notTested = d.steps.flatMap((s) => [...s.notCovered.map((n) => n.replace(/^[A-Z]+\d+: /, '')), ...(s.willNotProve ? [s.willNotProve] : [])]
+    .filter((n) => !/^not run: batch full$/i.test(n.trim())).filter(once).map((n) => `${esc(n)}${from(s)}`));
+  const list = (items) => { const ul = `<ul>${items.map((n) => `<li>${n}</li>`).join('')}</ul>`; return items.length > 4 ? `<details><summary>${items.length} items</summary>${ul}</details>` : ul; };
   const questions = d.steps.flatMap((s) => s.questions).filter((q) => !q.answer);
   const yours = d.steps.flatMap((s) => s.questions).filter((q) => q.answer);
-  const asking = questions.length > 0 || d.bugs.some(decideKind);
+  const asking = questions.length > 0 || d.bugs.some(decideKind) || d.promises.some((p) => p.ask);
   // Auto mode's choices are the run's, not any bug's: they fold into the banner at the top.
   // Each change auto mode chose for a bug is a choice too, linked to its card.
   const fixesChosen = d.bugs.filter((b) => /^auto:/.test(b.fix?.source ?? '')).map((b) => `<li><a href="#${esc(b.anchor)}">${esc(b.label ?? b.id)}</a>: ${esc(b.fix.source.replace(/^auto:\s*/, ''))}</li>`);
   const made = d.decisions.defaults.length + fixesChosen.length;
   const chosen = made
-    ? `<details class="banner"><summary>Auto mode made ${plural(made, 'choice', 'choices')} for this whole run, without you</summary><ul>${d.decisions.defaults.map((x) => `<li>${ruling(x.text, x.kind || x.step ? from({ kind: x.kind, name: x.step }) : '')}</li>`).join('')}${fixesChosen.join('')}</ul></details>`
+    ? `<details class="banner"><summary>${plural(made, 'choice', 'choices')} made automatically, without you</summary><ul>${d.decisions.defaults.map((x) => `<li>${ruling(x.text, x.kind || x.step ? from({ kind: x.kind, name: x.step }) : '')}</li>`).join('')}${fixesChosen.join('')}</ul></details>`
     : '<p class="banner">Run in auto mode: the skill made its choices without you.</p>';
   const notes = [
     d.stopped && ['The run stopped', `<p>${esc(d.stopped)}</p>`, 'need'],
-    d.flaky?.length && ['Flaky checks', `<p>Each held in one proof and failed in another on the same code, so no fix was undone for it: ${esc(d.flaky.join(', '))}. Prove it again before you trust it.</p>`, 'need'],
-    questions.length && ['Questions for you', `${askForm(questions)}<p class="muted">An answer may change what counts as a bug. Pick or write answers, press Copy answers and paste the lines in chat; or reply in chat yourself: <code>answer ${esc(questions[0].id)}: your answer</code>. The skill keeps them for this feature: explorers stop asking, and the next proof checks the app against them.</p>`, '', 'questions'],
+    d.flaky?.length && ['Unreliable tests', `<p>Each passed once and failed once on the same code, so no fix was undone for it: ${esc(d.flaky.join(', '))}. Test it again before you trust it.</p>`, 'need'],
     yours.length && ['Your answers', `<ul>${yours.map((q) => `<li><code>${esc(q.id)}</code> ${esc(q.note)}<br>You said: <b>${esc(q.answer)}</b></li>`).join('')}</ul>`],
-    tested.length && ['Tested', `<ul>${tested.map((n) => `<li>${n}</li>`).join('')}</ul>`],
-    notTested.length && ['Not tested', `<ul>${notTested.map((n) => `<li>${n}</li>`).join('')}</ul>`],
+    tested.length && ['Tested', list(tested)],
+    notTested.length && ['Not tested', list(notTested)],
   ].filter(Boolean);
   // A stopped run shows above Start here; the other notes below it, so Start here is on a phone's first screen.
   const dl = (list) => (list.length ? `<dl class="notes">${list.map(([dt, dd, cls, id]) => `<dt${id ? ` id="${id}"` : ''}${cls ? ` class="${cls}"` : ''}>${esc(dt)}</dt><dd>${dd}</dd>`).join('')}</dl>` : '');
@@ -657,40 +831,49 @@ export function pageHtml(d) {
   // What needs you, most urgent first: bugs, then checks that are not a fix's proof. One to start with, five next, the rest folded.
   // With more than one round, each card names the rounds that found its bug.
   const rounds = d.bugs.some((b) => b.round > 1 || b.again);
-  const urgent = [...d.bugs.filter((b) => b.needsYou).map((b) => ({ item: b, tone: STATE_TONE(b), row: (open) => bugRow(b, d.unchecked, open, rounds) })),
-    ...d.promises.filter((p) => !p.fixesBug && ['disproved', 'not-proven'].includes(p.verdict)).map((p) => ({ item: p, tone: CHECK_TONE[p.verdict], row: (open) => checkRow(p, open) }))].sort(urgentFirst);
-  const [first, ...next] = urgent;
+  const urgent = [...d.bugs.filter((b) => b.ask === 'decide').map((b) => ({ item: b, tone: STATE_TONE(b), row: (open) => bugRow(b, d.unchecked, open, rounds) })),
+    ...d.promises.filter((p) => p.ask === 'decide').map((p) => ({ item: p, tone: CHECK_TONE[p.verdict], row: (open) => checkRow(p, open) }))].sort(urgentFirst);
+  const retesting = [...d.bugs, ...d.promises].filter((x) => x.ask === 'retest');
+  // Every decision as one step: the bugs and tests, worst first, then the questions, then the one retest. One shows at a time.
+  const steps = [...urgent.map((u) => u.row(true)), ...questions.map((q) => `<div class="ask asks question">${askForm([q])}</div>`), retestAsk(retesting)].filter(Boolean);
+  const decisions = steps.length ? `<section class="decisions" id="decisions"><h2>Your decisions</h2><p class="progress" hidden>Decision <b class="at">1</b> of ${steps.length}</p>
+<ol class="todo">${steps.map((x, i) => `<li${i ? '' : ' class="now"'}>${x}</li>`).join('\n')}</ol>
+<p class="step-nav" hidden><button type="button" class="back">Back</button> <button type="button" class="next">Next decision</button> <button type="button" class="all">Show all at once</button></p>
+${questions.length ? `<p class="muted">Pick or write answers, then Copy answers and paste them in chat, or reply <code>answer ${esc(questions[0].id)}: your answer</code>. Later runs of this feature follow them.</p>` : ''}</section>` : '';
   const group = (label, rows, open = false) => (rows.length ? `<details class="group"${open ? ' open' : ''}><summary>${esc(label)} <span class="n">${rows.length}</span></summary>${rows.join('\n')}</details>` : '');
   const calm = !urgent.length;
-  const rest = d.bugs.filter((b) => !b.needsYou);
+  const rest = d.bugs.filter((b) => b.ask !== 'decide');
   // Being worked on also takes any state no other group names, so every bug has a card.
-  const settled = ['Fixed and proven', 'Fix not requested', "Won't fix"];
+  const settled = ['Fixed and proven', 'Fix not requested', "Won't fix", 'Not a bug'];
   const restGroups = [
-    ['Being worked on', rest.filter((b) => !settled.includes(b.state)), true],
-    ['Fixed and proven', rest.filter((b) => b.state === 'Fixed and proven'), false],
-    ['Found, no fix requested', rest.filter((b) => b.state === 'Fix not requested' && b.kind !== 'gap' && !b.unconfirmed && !b.withdrawn), calm],
-    ['Missing features (gaps)', rest.filter((b) => b.state === 'Fix not requested' && b.kind === 'gap' && !b.unconfirmed && !b.withdrawn), calm],
-    ['Not confirmed: its own picture does not show it', rest.filter((b) => b.state === 'Fix not requested' && b.unconfirmed && !b.withdrawn), false],
-    ['Withdrawn by their tester', rest.filter((b) => b.state === 'Fix not requested' && b.withdrawn), false],
+    ['In progress', rest.filter((b) => !settled.includes(b.state) && b.ask !== 'retest'), true],
+    ["Couldn't be checked", rest.filter((b) => b.ask === 'retest'), false],
+    ['Fixed and verified', rest.filter((b) => b.state === 'Fixed and proven'), false],
+    ['Not fixed (no fix asked for)', rest.filter((b) => b.state === 'Fix not requested' && b.kind !== 'gap' && !b.unconfirmed && !b.withdrawn), calm],
+    ['Missing features', rest.filter((b) => b.state === 'Fix not requested' && b.kind === 'gap' && !b.unconfirmed && !b.withdrawn), calm],
+    ["Not confirmed (screenshot doesn't show it)", rest.filter((b) => b.state === 'Fix not requested' && b.unconfirmed && !b.withdrawn), false],
+    ['Withdrawn', rest.filter((b) => b.state === 'Fix not requested' && b.withdrawn), false],
     ["Won't fix", rest.filter((b) => b.state === "Won't fix"), false],
+    ['Not a bug', rest.filter((b) => b.state === 'Not a bug'), false],
   ].map(([label, list, open]) => [label, list.sort(worstFirst), open]);
   const bugGroups = restGroups.map(([label, list, open]) => group(label, list.map((b) => bugRow(b, d.unchecked, false, rounds)), open)).join('\n');
   const otherChecks = d.promises.filter((p) => !urgent.some((u) => u.item === p));
   const checkGroups = [
-    ['Being checked', otherChecks.filter((p) => p.verdict === 'checking'), true],
-    ['Checks of the fixes', otherChecks.filter((p) => p.fixesBug && p.verdict !== 'checking'), false],
-    ['Proven', otherChecks.filter((p) => !p.fixesBug && p.verdict === 'proven'), calm && !d.bugs.length],
+    ['Running', otherChecks.filter((p) => p.verdict === 'checking'), true],
+    ['Not run', otherChecks.filter((p) => p.verdict === 'not-run'), false],
+    ["Couldn't run", otherChecks.filter((p) => p.ask === 'retest'), false],
+    ['Tests of the fixes', otherChecks.filter((p) => p.fixesBug && p.verdict !== 'checking'), false],
+    ['Passed', otherChecks.filter((p) => !p.fixesBug && p.verdict === 'proven'), calm && !d.bugs.length],
+    ['You decided', otherChecks.filter((p) => p.decided && p.verdict !== 'proven' && p.verdict !== 'checking'), false],
   ].map(([label, list, open]) => group(label, list.map((p) => checkRow(p)), open)).join('\n');
 
   const items = d.bugs.length ? [...urgent.filter((u) => u.item.state !== undefined).map((u) => u.item), ...restGroups.flatMap(([, list]) => list)].map((b) => [b.anchor, STATE_TONE(b), b.title, b.label])
     : d.promises.filter((p) => !p.fixesBug).sort((x, y) => ['need', 'wait', 'run', 'good', 'idle'].indexOf(CHECK_TONE[x.verdict] ?? 'idle') - ['need', 'wait', 'run', 'good', 'idle'].indexOf(CHECK_TONE[y.verdict] ?? 'idle')).map((p) => [p.id, CHECK_TONE[p.verdict] ?? 'idle', p.statement]);
-  const words = STRIP_WORDS[d.bugs.length ? 'bug' : 'check'];
-  const key = ['need', 'wait', 'run', 'good', 'idle'].map((t) => [t, items.filter(([, x]) => x === t).length]).filter(([, k]) => k);
   // Past 20, a cell is a small mark without its id, so a long list stays a few rows on a phone; it still links to its bug.
   const marks = items.length > 20;
   const strip = items.length ? `<div class="strip${marks ? ' marks' : ''}">${items.map(([id, t, name, label]) => { const said = esc(`${label ?? id}: ${name}`);
-    return `<a class="cell ${t}${first && (first.item.anchor ?? first.item.id) === id ? ' first' : ''}" href="#${esc(id)}" title="${said}"${marks ? ` aria-label="${said}"></a>` : `><span>${esc(label ?? id)}</span></a>`}`; }).join('')}</div>
-<p class="key">${key.map(([t, k]) => `<span><i class="${t}"></i>${words[t]}: ${k}</span>`).join('')}</p>` : '';
+    return `<a class="cell ${t}${urgent[0] && (urgent[0].item.anchor ?? urgent[0].item.id) === id ? ' first' : ''}" href="#${esc(id)}" title="${said}"${marks ? ` aria-label="${said}"></a>` : `><span>${esc(label ?? id)}</span></a>`}`; }).join('')}</div>
+` : '';
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -713,13 +896,18 @@ h1{margin:10px 0 8px;font:700 clamp(28px,6vw,40px)/1.1 var(--serif);letter-spaci
 .band.done{background:color-mix(in srgb,var(--good) 16%,var(--sheet));color:var(--ink);box-shadow:inset 0 -3px 0 var(--good)}
 .band.now{background:var(--run);color:var(--on-run)}.band.now span{color:inherit}.band.running{background:repeating-linear-gradient(135deg,var(--run) 0 8px,color-mix(in srgb,var(--run) 88%,var(--sheet)) 8px 16px)}
 .band.todo{background:none;border:1.5px dashed var(--line);color:var(--ink-3)}
-.counts{margin:8px 0 0;font-size:14px;font-weight:600;color:var(--ink-2)}.meta{margin:10px 0 0;color:var(--ink-3);font-size:13px}.band .clock{display:block;font-size:11px}.none{color:var(--ink-3);font-style:italic}.back{margin:0 0 6px;font-size:14px}
+.filter{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 22px}.filter button{padding:4px 11px;border:1px solid var(--line);border-radius:999px;background:var(--sheet);color:var(--ink-2);font:600 13px/1.6 var(--sans);cursor:pointer}.filter button[aria-pressed=true]{border-color:var(--ink);background:var(--ink);color:var(--sheet)}.filter .n{font-weight:400;opacity:.75}.filter .by{margin-left:10px;color:var(--ink-3);font-size:13px}
+.todo{list-style:none;margin:0;padding:0}.todo > li{margin:0 0 14px}.progress{margin:0 0 8px;color:var(--ink-2);font-weight:600}
+.step-nav{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}.step-nav button{padding:7px 14px;border:1px solid var(--line);border-radius:8px;background:var(--sheet);color:var(--ink);font:600 14px var(--sans);cursor:pointer}.step-nav .next{border-color:var(--run);background:var(--run);color:var(--on-run)}.step-nav button:disabled{opacity:.4;cursor:default}
+.retest,.question{padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--sheet)}
+.later{margin:4px 0 0;color:var(--ink-3);font-size:14px}
+.parts{margin:6px 0 0;font-size:17px;font-weight:600;color:var(--ink)}.counts{margin:8px 0 0;font-size:14px;font-weight:600;color:var(--ink-2)}.meta{margin:10px 0 0;color:var(--ink-3);font-size:13px}.band .clock{display:block;font-size:11px}.none{color:var(--ink-3);font-style:italic}.back{margin:0 0 6px;font-size:14px}
 .notes{display:grid;grid-template-columns:10em 1fr;gap:10px 20px;margin:28px 0 0;padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .notes dt{font-weight:650}.notes dt.need{color:var(--need)}.notes dt.wait{color:var(--wait)}.notes dd{margin:0}.notes p{margin:4px 0 0}.notes ul{margin:0;padding-left:18px}.notes .suggest{color:var(--ink-3);font-size:.9em;font-style:italic}
 .asks fieldset{border:0;margin:0 0 18px;padding:0;min-width:0}.asks legend{padding:0}.asks .pick{display:flex;gap:8px;align-items:baseline;margin:6px 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--sheet);cursor:pointer}.asks .pick:has(:checked){border-color:var(--run);background:color-mix(in srgb,var(--run) 7%,var(--sheet))}.asks .pick input{flex:none;margin:0}
 .asks input[type=text],.asks textarea{display:block;width:100%;margin:6px 0 0;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--sheet);color:var(--ink);font:inherit}.asks textarea{font:13px/1.5 var(--mono);resize:vertical}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}.ask .asks,.ask fieldset{margin:8px 0 0}
-.send{position:sticky;bottom:0;margin:24px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--sheet);box-shadow:0 -2px 10px rgb(0 0 0/.06)}.send textarea{margin-top:8px}.send textarea:placeholder-shown{display:none}
+.send{position:sticky;bottom:0;margin:24px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--sheet);box-shadow:0 -2px 10px rgb(0 0 0/.06)}.send textarea{margin-top:8px}.send textarea{display:none}.send.show textarea{display:block}
 .asks .copy{margin:0}.asks button{padding:7px 16px;border:0;border-radius:8px;background:var(--run);color:var(--on-run);font:650 14px var(--sans);cursor:pointer}
 .banner{display:inline-block;margin:10px 0 0;padding:4px 12px;border-radius:8px;background:var(--tint-wait);border-left:4px solid var(--wait);font-size:14px;font-weight:650}details.banner{display:block;width:fit-content;max-width:100%;box-sizing:border-box;margin:10px 0 0}details.banner>summary::before{content:"+";display:inline-block;width:1.1em;color:var(--wait)}details.banner[open]>summary::before{content:"−"}details.banner ul{margin:6px 0 4px;padding-left:18px;font-weight:400}details.banner li{margin:0 0 6px}
 h2{margin:40px 0 12px;font:650 14px var(--sans);color:var(--ink-3)}
@@ -763,36 +951,35 @@ details.case{margin:0}details.case>summary{display:flex;gap:8px;align-items:base
 .mark{flex:none;width:16px;height:16px;border-radius:50%;background:var(--tone);color:#fff;font:700 11px/16px var(--sans);text-align:center;align-self:center}.good .mark::before{content:"✓"}.need .mark::before{content:"✕"}.wait .mark::before,.idle .mark::before{content:"–"}.idle .mark{background:var(--line);color:var(--ink-3)}
 .bugid{margin-left:auto;font:600 12px var(--mono);color:var(--need);white-space:nowrap}
 dl.vs2{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:6px 0 0 24px;font-size:15px}dl.vs2 dt{color:var(--ink-3);font-size:13px;font-weight:650;padding-top:2px}dl.vs2 dd{margin:0}details.case.need dd.got{color:var(--need)}
-.case .note{margin:10px 0 0 24px;padding:8px 12px;border-radius:8px;background:var(--tint-wait);font-size:14px}
+.case .note{margin:10px 0 0 24px;padding:8px 12px;border-radius:8px;background:var(--tint-wait);font-size:14px}.more-note{display:inline}.more-note summary{display:inline;cursor:pointer;color:var(--run)}.more-note[open] summary{display:none}
 .calls-head,.console{margin:10px 0 0 24px;font-size:13px;color:var(--ink-3)}ul.calls{margin:4px 0 0 24px;padding:0;list-style:none;font:13px/1.5 var(--mono)}ul.calls li{padding:2px 0}
 figure.ev{margin:10px 0 0 24px}figure.ev img,figure.ev video{display:block;width:100%;max-height:420px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:var(--soft)}figure.ev figcaption{margin-top:4px;font-size:13px;color:var(--ink-3)}
 details.files{margin:8px 0 10px 24px}details.files>summary{font-size:13px;color:var(--ink-3)}details.files>summary::before{content:"+ "}details.files[open]>summary::before{content:"− "}details.files ul{margin:4px 0 0;padding-left:18px;font-size:13px}details.files img,details.files video{max-width:160px;max-height:100px;vertical-align:middle}
 footer{margin-top:40px}footer details{border-top:1px solid var(--line);margin:0}footer summary{padding:12px 0;font-weight:650;color:var(--ink-2)}footer summary::before{content:"+";display:inline-block;width:1.2em;color:var(--ink-3)}footer details[open]>summary::before{content:"−"}footer ul{margin:0 0 12px;padding-left:20px}
 .brief{white-space:pre-line;margin:0 0 12px}.muted{color:var(--ink-3)}
-@media (max-width:640px){.sec{grid-template-columns:1fr}.repro{grid-template-columns:1fr}.repro .shot{order:3}.shot img,.shot video{height:160px;width:auto;max-width:100%}.vs{grid-template-columns:1fr}.notes{grid-template-columns:1fr}.band span{display:none}.file{padding:4px 14px 14px}}
+@media (max-width:640px){.sec{grid-template-columns:1fr}.repro{grid-template-columns:1fr}.repro .shot{order:3}.shot img,.shot video{height:160px;width:auto;max-width:100%}.vs{grid-template-columns:1fr}.notes{grid-template-columns:1fr}.band span,.band .clock{display:none}.file{padding:4px 14px 14px}}
 </style></head><body><main>
 <header>
-${d.hasIndex ? '<p class="back"><a href="../../index.html">All requests</a></p>\n' : ''}<p class="kick"><b>${esc(d.feature)}</b>, ${esc((KIND[d.kind] ?? d.kind ?? '').toLowerCase())}, started ${esc(started)}. ${d.live ? 'Running now.' : 'Finished.'}${d.testedOn ? ` Tested on ${esc(d.testedOn.env ?? 'an unnamed environment')}${d.testedOn.commit ? ` at ${esc(d.testedOn.commit)}` : ''}.` : ''}</p>
-${d.auto ? `${chosen}\n` : d.approvedByPerson ? '<p class="kick">The checks were approved by a person before testing.</p>\n' : ''}<h1 class="${a.tone}">${esc(a.need).replace(/\d+ questions? waits? for you\./, (m) => `<a href="#questions">${m}</a>`)}</h1>
-<p class="sub">${esc(a.text)}</p>
+${d.hasIndex ? '<p class="back"><a href="../../index.html">All requests</a></p>\n' : ''}<p class="kick"><b>${esc(d.feature)}</b>, ${esc((KIND[d.kind] ?? d.kind ?? '').toLowerCase())}, started ${esc(started)}${d.testedOn?.env ? `, on ${esc(d.testedOn.env)}` : ''}.</p>
+${!d.auto && d.approvedByPerson ? '<p class="kick">The tests were approved by a person before testing.</p>\n' : ''}<h1 class="${a.tone}">${esc(a.need)}</h1>
+${a.parts.length ? `<ul class="parts">${a.parts.map((x) => `<li>${/^Answer \d/.test(x) ? `<a href="#decisions">${esc(x)}</a>` : esc(x)}</li>`).join('')}</ul>\n` : ''}${a.later ? `<p class="later">${esc(a.later)}</p>\n` : ''}<p class="sub">${esc(a.text)}</p>
 ${strip}
-${ribbon(d)}
-${counters(d)}
-<p class="meta">${d.live ? `Updated ${esc(when(d.updatedAt))}. This page refreshes itself every 5 seconds, except while a video plays; if this time stops moving, the run may have stopped.` : `Last updated ${esc(when(d.updatedAt))}.`}</p>
+${d.live ? ribbon(d) : ''}
+<p class="meta"${d.testedOn?.commit ? ` title="Code tested: ${esc(d.testedOn.commit)}"` : ''}>${d.live ? `Live · updated ${esc(clock(d.updatedAt))}` : `Updated ${esc(when(d.updatedAt))}`}</p>
 </header>
 ${dl(notes.filter(([, , cls]) => cls === 'need'))}
-${first ? `<section class="start ${first.tone}"><p>Start here</p>${first.row(true)}</section>` : ''}
-${next.length ? `<h2>Then, in this order</h2><ol class="queue">${next.slice(0, 5).map((u) => `<li>${u.row(false)}</li>`).join('')}</ol>${group(`${plural(next.length - 5, 'more needs', 'more need')} you`, next.slice(5).map((u) => u.row(false)))}` : ''}
-${dl(notes.filter(([, , cls]) => cls !== 'need'))}
-${bugGroups.trim() || checkGroups.trim() ? `<h2>${urgent.length ? 'Everything else' : d.bugs.length ? 'Bugs' : 'Checks'}</h2>${bugGroups}\n${checkGroups}` : ''}
+${decisions}
+${d.auto ? `${chosen}\n` : ''}${dl(notes.filter(([, , cls]) => cls !== 'need'))}
+${bugGroups.trim() || checkGroups.trim() ? `<section class="rest"><h2>${steps.length ? 'Everything else' : d.bugs.length ? 'Bugs' : 'Tests'}</h2>${filterBar(d)}${bugGroups}\n${checkGroups}</section>` : ''}
 <footer>
 ${d.releaseNotes.length ? `<details><summary>For the release notes</summary><ul>${d.releaseNotes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}
-${d.learnings.length ? `<details><summary>Learnings from the code and docs (${d.learnings.length})</summary><ul>${d.learnings.map((l) => `<li>${esc(l.learning)}<br><span class="muted">${[l.by, l.source].filter(Boolean).map(esc).join(' · ')}</span></li>`).join('')}</ul></details>` : ''}
+${d.learnings.length ? `<details><summary>What the testers learned about the app (${d.learnings.length})</summary><ul>${d.learnings.map((l) => `<li>${esc(l.learning)}<br><span class="muted">${[l.by, l.source].filter(Boolean).map(esc).join(' · ')}</span></li>`).join('')}</ul></details>` : ''}
+${d.live ? '' : `<details><summary>How long each stage took</summary>${ribbon(d)}</details>`}
 ${d.brief ? `<details><summary>What was asked</summary><p class="brief">${plainBrief(d.brief)}</p></details>` : ''}
-${d.problems.length ? `<details><summary>${plural(d.problems.length, 'note', 'notes')} from the evidence check</summary><p class="muted">For whoever audits this run; the results above already take these into account.</p><ul>${d.problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></details>` : ''}
+${d.problems.length ? `<details><summary>Run log (${plural(d.problems.length, 'note', 'notes')})</summary><p class="muted">For auditing the run; the results above already allow for these.</p><ul>${d.problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></details>` : ''}
 </footer>
 ${asking ? SEND : ''}
-</main>${asking ? `\n${ASK_SCRIPT}` : ''}${d.live ? `\n${LIVE_SCRIPT}` : ''}</body></html>
+</main>${asking ? `\n${ASK_SCRIPT}` : ''}${filterBar(d) ? `\n${FILTER_SCRIPT}` : ''}${steps.length > 1 ? `\n${STEP_SCRIPT}` : ''}${d.live ? `\n${LIVE_SCRIPT}` : ''}</body></html>
 `;
 }
 

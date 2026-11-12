@@ -178,6 +178,15 @@ test('chatSummary leads with the counts and ends with the page', () => {
   assert.match(text, /Open: file:\/\/\/x$/);
 });
 
+test('chatSummary leads with the page\'s own headline when it has one, never a count of its own', () => {
+  const explore = exploreRun([{ id: 'BUG-001', fix: fixed() }]);
+  const verify = link(proofRun([{ id: 'C5', verdict: 'proven', source: 'found: BUG-001' }]), explore, { 'BUG-001': 'C5' });
+  const { data } = fixReport(fixRun([{ n: 1, explore, verify }]));
+  const lines = chatSummary(data, 'file:///x', ['1 decision waits for you before you ship.', '- Review 1 fix']).split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['1 decision waits for you before you ship.', '- Review 1 fix']);
+  assert.doesNotMatch(lines.join('\n'), /^Fix: /m);
+});
+
 const SCRIPT = fileURLToPath(new URL('../../skills/fix-and-prove/scripts/build-fix-report.mjs', import.meta.url));
 const cli = (...args) => execFileSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
 const sampleRun = (title = 'Bug BUG-001') => {

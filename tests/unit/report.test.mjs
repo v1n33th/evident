@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { readResult, writeResult } from '../../skills/show-your-work/scripts/report.mjs';
 
 test('readResult returns the checked data until a file in the step changes', () => {
@@ -20,7 +20,28 @@ test('readResult returns the checked data until a file in the step changes', () 
   assert.equal(readResult(step), null);
 });
 
-import { requestData } from '../../skills/show-your-work/scripts/report.mjs';
+test('readResult stays fresh when a bug is filed with only its record, and goes stale when evidence comes', () => {
+  const step = mkdtempSync(join(tmpdir(), 'step-'));
+  mkdirSync(join(step, 'evidence'));
+  writeFileSync(join(step, 'evidence', 'C1-a.png'), 'png');
+  writeResult(step, { x: 1 });
+  mkdirSync(join(step, 'bugs', 'BUG-009-x'), { recursive: true });
+  writeFileSync(join(step, 'bugs', '.BUG-009'), '');
+  writeFileSync(join(step, 'bugs', 'BUG-009-x', 'bug.json'), '{}');
+  assert.deepEqual(readResult(step), { x: 1 }, 'a record and its number change no verdict');
+  writeFileSync(join(step, 'bugs', 'BUG-009-x', 'found.png'), 'png');
+  assert.equal(readResult(step), null, 'evidence does');
+  // A result an older version wrote lists the reservation files: it still reads as fresh.
+  const old = mkdtempSync(join(tmpdir(), 'step-'));
+  mkdirSync(join(old, 'bugs'));
+  writeFileSync(join(old, 'bugs', '.BUG-001'), '');
+  writeResult(old, { y: 1 });
+  const stored = JSON.parse(readFileSync(join(old, 'result.json'), 'utf8'));
+  writeFileSync(join(old, 'result.json'), JSON.stringify({ ...stored, files: [...stored.files, 'bugs/.BUG-001'].sort() }));
+  assert.deepEqual(readResult(old), { y: 1 });
+});
+
+import { headline, requestData } from '../../skills/show-your-work/scripts/report.mjs';
 import { newRequest, newStep } from '../../skills/show-your-work/scripts/run-folder.mjs';
 
 const put = (dir, files) => { for (const [name, text] of Object.entries(files)) { mkdirSync(join(dir, name, '..'), { recursive: true }); writeFileSync(join(dir, name), typeof text === 'string' ? text : JSON.stringify(text)); } };
@@ -66,8 +87,11 @@ test('requestData of a grown request joins found, fixed and proven per bug', asy
   assert.deepEqual(data.stages.map((s) => s.label), ['Plan', 'Explore', 'Fix', 'Prove', 'Done']);
 });
 
-test('a proof step without a fresh result shows checking', async () => {
-  const { request } = grown(project(), { checked: false });
+test('a proof step without a fresh result shows checking while the run goes, and could not be proven once it is over', async () => {
+  const p = project();
+  const { request, proof } = grown(p, { checked: false });
+  assert.equal((await requestData(request)).bugs[0].proven, 'not-proven');
+  writeFileSync(join(p, 'run.lock'), `${proof}\n`);
   assert.equal((await requestData(request)).bugs[0].proven, 'checking');
 });
 
@@ -127,18 +151,18 @@ test('pageHtml reloads only while live', async () => {
   assert.match(live, /<script>[\s\S]*sessionStorage[\s\S]*scrollY[\s\S]*currentTime[\s\S]*location\.reload\(\)[\s\S]*<\/script>/);
   assert.doesNotMatch(pageHtml({ ...data, live: false }), /http-equiv="refresh"|location\.reload/);
   // The start and update times name their zone.
-  assert.match(pageHtml({ ...data, live: false }), /started [^<]* at \d\d:\d\d (UTC|GMT[+-][\d:]+)\.[\s\S]*Last updated [^<]*\d\d:\d\d:\d\d (UTC|GMT[+-][\d:]+)\./);
+  assert.match(pageHtml({ ...data, live: false }), /started [^<]* at \d\d:\d\d (UTC|GMT[+-][\d:]+)[,.][\s\S]*Updated [^<]*\d\d:\d\d:\d\d (UTC|GMT[+-][\d:]+)/);
   // While live, the headline still says what already waits on you.
-  assert.match(pageHtml({ ...data, live: true }), /<h1 class="wait">\d+ things? needs? you\. Still running\.<\/h1>/);
+  assert.match(pageHtml({ ...data, live: true }), /<h1 class="wait">\d+ decisions? waits? for you\. Still running\.<\/h1>/);
   assert.match(pageHtml({ ...data, live: true, counts: { ...data.counts, needsYou: 0 } }), /<h1 class="run">Still running\.<\/h1>/);
 });
 
-test('pageHtml escapes text, and has no script when nothing waits for an answer', async () => {
+test('pageHtml escapes text, and has no answer script when nothing waits for an answer', async () => {
   const data = await sample();
   data.bugs[0].title = '<b>x</b>';
   for (const b of data.bugs) b.needsYou = false;
   const html = pageHtml(data);
-  assert.doesNotMatch(html, /<script/i);
+  assert.doesNotMatch(html, /copy-answers|answer-lines/);
   assert.match(html, /&#60;b&#62;x&#60;\/b&#62;/);
 });
 
@@ -246,13 +270,13 @@ test('the page shows an auto-mode request, what was decided without you, a stop 
   put(fix, { 'rounds.json': { feature: 'invites', auto: true, stopped: 'The app did not change after 3 fixes and a restart.', rounds: [{ n: 1, flaky: ['C-bbea'] }] } });
   writeResult(fix, { releaseNotes: { migrations: [], existingUsers: ['BUG-001: Free orgs can no longer send an 11th invite.'] } });
   const html = pageHtml(await requestData(request));
-  assert.match(html, /<details class="banner"><summary>Auto mode made 1 choice for this whole run, without you<\/summary>/);
+  assert.match(html, /<details class="banner"><summary>1 choice made automatically, without you<\/summary>/);
   assert.match(html, /Approved 5 claims as written/);
   assert.match(html, /The app did not change after 3 fixes and a restart\./);
   assert.match(html, /Free orgs can no longer send an 11th invite\./);
-  assert.match(html, /Flaky checks<\/dt><dd><p>Each held in one proof and failed in another on the same code, so no fix was undone for it: C-bbea \(round 1\)\./);
-  // A stopped run comes before Start here; the auto choices fold into the banner, above both.
-  assert.ok(html.indexOf('class="banner"') < html.indexOf('The run stopped') && html.indexOf('The run stopped') < html.indexOf('<p>Start here'));
+  assert.match(html, /Unreliable tests<\/dt><dd><p>Each passed once and failed once on the same code, so no fix was undone for it: C-bbea \(round 1\)\./);
+  // A stopped run comes before your decisions; the auto choices fold into a banner after them.
+  assert.ok(html.indexOf('The run stopped') < html.indexOf('id="decisions"') && html.indexOf('id="decisions"') < html.indexOf('class="banner"'));
   assert.doesNotMatch(html, /Decided without you/);
 });
 
@@ -263,9 +287,9 @@ test('the page opens with a plain result line, and each bug has one plain state'
   writeResult(proof, { claims: [{ id: 'C-0001', statement: 'It works', verdict: 'proven', cases: [], evidence: [] }], problems: [] });
   const data = await requestData(request);
   const html = pageHtml(data);
-  assert.match(html, /1 of 2 bugs fixed and proven\./);
-  assert.match(html, /1 fix did not hold\./);
-  assert.match(html, /1 thing needs you before shipping\./);
+  assert.match(html, /<p class="sub">Found 2 bugs; 1 fixed and verified so far\.<\/p>/);
+  assert.match(html, /1 decision waits for you before you ship\.[\s\S]*<ul class="parts"><li>Retry or leave 1 fix that didn&#39;t work<\/li><\/ul>/);
+  assert.doesNotMatch(html, /<p class="sub">[^<]*did not hold/, 'said once, in the parts line');
   assert.deepEqual(data.bugs.map((b) => b.state), ['Fixed and proven', 'Fix did not hold']);
 });
 
@@ -288,14 +312,14 @@ test('a proof request counts its checks, and failed or unproven checks need you'
   const data = await requestData(request);
   assert.deepEqual(data.counts, { found: 0, gaps: 0, unconfirmed: 0, fixed: 0, proven: 0, needsYou: 2, questions: 0, checks: 3, ownChecks: 3, checksProven: 1, checksFailed: 1, checksUnproven: 1 });
   const html = pageHtml(data);
-  assert.match(html, /1 of 3 checks proven\. 1 failed\. 1 could not be proven\./);
-  assert.match(html, /2 things need you before shipping\./);
+  assert.match(html, /<p class="sub">1 of 3 tests passed\.<\/p>/);
+  assert.match(html, /2 decisions wait for you before you ship\.[\s\S]*<ul class="parts"><li>Fix, retest or drop 1 failed test<\/li><li>Test again the 1 thing that couldn&#39;t be checked \(one click\)<\/li><\/ul>/);
   assert.match(html, /Why it could not run: No way to make a plan lapse/);
   assert.match(html, /<dt>Got<\/dt><dd class="got">The 51st seat was added\.<\/dd>/);
   assert.doesNotMatch(html, /approved by a person/);
   put(proof, { 'claims.json': { approvedBy: 'user', claims: [] } });
   writeResult(proof, { approvedBy: 'user', claims: [], problems: [] });
-  assert.match(pageHtml(await requestData(request)), /The checks were approved by a person before testing\./);
+  assert.match(pageHtml(await requestData(request)), /The tests were approved by a person before testing\./);
 });
 
 test('a check shows its cases in order, each with its own evidence: the failed one open, calls as one line each, pictures with their device', async () => {
@@ -315,12 +339,12 @@ test('a check shows its cases in order, each with its own evidence: the failed o
     { id: 'C-0004', statement: 'D', verdict: 'not-proven', proof: 'will not: needs a setup command that moves the clock', evidence: [], cases: [{ id: 'a', result: 'not-run', do: 'Wait a day' }] }], problems: [] });
   const html = pageHtml(await requestData(request));
   const card = html.match(/<details class="bug check [^"]*" id="C-0002"[\s\S]*?<\/ol><\/div><\/details>/)[0];
-  assert.match(card, /<span class="trail">fails at b · 1 of 2 passed<\/span>/);
+  assert.match(card, /<span class="trail">1 of 2 steps failed<\/span>/);
   assert.match(card, /<details class="case good"><summary><b class="mark"><\/b>a\. Add the 50th seat<\/summary>/, 'a passed case folds to one line');
   assert.match(card, /<details class="case need" open><summary><b class="mark"><\/b>b\. Add the 51st seat <span class="bugid">BUG-002<\/span><\/summary>/);
   const b = card.slice(card.indexOf('<details class="case need"'));
   assert.match(b, /<dl class="vs2"><dt>Expected<\/dt><dd>Refused<\/dd><dt>Got<\/dt><dd class="got">The 51st seat was added\.<\/dd><\/dl>/);
-  assert.match(b, /<p class="note">Tester's note: Used a fresh org<\/p>/);
+  assert.match(b, /<div class="note">Tester's note: Used a fresh org<\/div>/);
   assert.match(b, /<p class="calls-head">Last 3 of 4 calls<\/p><ul class="calls">[\s\S]*<a href="proof\/evidence\/C-0002-b-4-response\.txt" target="_blank" rel="noopener">POST \/api\/seats \(4\) → HTTP\/1\.1 201 Created; seat 51<\/a>/);
   assert.doesNotMatch(b.slice(0, b.indexOf('<details class="files">')), /C-0002-b-1-|headers\.txt|body\.txt/, 'older calls and the split files wait under All files');
   assert.match(b, /<figure class="ev">[\s\S]*?C-0002-b-mobile\.png[\s\S]*?<figcaption>Phone · Team page shows 51 seats<\/figcaption><\/figure>/);
@@ -339,10 +363,11 @@ test('the page names what it tested on, marks unchecked files, and says what hap
   put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'needs-decision', summary: 's', decision: 'Change it?', inProduction: true } }) });
   writeResult(step, { claims: [], bugs: [], problems: ['bugs/BUG-001-a/network.txt: not in evidence.jsonl'], subject: { commit: 'abc1234', env: 'http://localhost:4173' } });
   const html = pageHtml(await requestData(request));
-  assert.match(html, /Tested on http:\/\/localhost:4173 at abc1234/);
+  assert.match(html, /, on http:\/\/localhost:4173\.<\/p>/);
+  assert.match(html, /<p class="meta" title="Code tested: abc1234">/, 'the commit once, on hover');
   assert.match(html, /network\.txt<\/a> <span class="muted">\(not checked: no tester logged this file, so nothing ties it to the test\)<\/span>/);
   assert.match(html, /Until you decide, it stays as it is\./);
-  assert.match(html, /Already in production: it does not block shipping\./);
+  assert.match(html, /Already in the live app, so it doesn't block this release\./);
 });
 
 test('a fix record written into a bug.json later does not make the explore step\'s check stale', () => {
@@ -360,15 +385,15 @@ test('a calm page for whoever fixes: open questions are named, idle rows carry n
   const { request, step } = explore(project());
   put(step, { 'charters/T1.jsonl': `${JSON.stringify({ result: 'question', note: 'Per org or per owner?' })}\n` });
   let html = pageHtml(await requestData(request));
-  assert.match(html, /1 question waits for you\./);
-  assert.doesNotMatch(html, /Nothing needs you/);
+  assert.match(html, /<li><a href="#decisions">Answer 1 question<\/a><\/li>/);
+  assert.doesNotMatch(html, /nothing needs you/);
   assert.doesNotMatch(html, /class="state[^"]*">Fix not requested/);
-  assert.match(html, /No fix requested/);
+  assert.match(html, /class="cell idle/, 'a bug with no fix requested is an idle cell in the strip');
   const { request: grownRequest, step: s2 } = grown(project());
   put(s2, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'needs-decision', summary: 'Old copy', inProduction: true } }) });
   html = pageHtml(await requestData(grownRequest));
-  assert.match(html, /<summary>[\s\S]*?already in production[\s\S]*?<\/summary>/);
-  assert.match(html, /<p class="ships">Already in production: it does not block shipping\.<\/p>/, 'said in words where a skimmer looks, not only in a chip');
+  assert.match(html, /<summary>[\s\S]*?already live[\s\S]*?<\/summary>/);
+  assert.match(html, /<p class="ships">Already in the live app, so it doesn't block this release\.<\/p>/, 'said in words where a skimmer looks, not only in a chip');
 });
 
 import * as R from '../../skills/show-your-work/scripts/report.mjs';
@@ -451,12 +476,12 @@ test('a bug opens short: your call and how to reproduce it, with the cause, the 
   const html = pageHtml(await R.requestData(grown(project()).request));
   const card = html.match(/<details class="bug [^"]*" id="BUG-002"[\s\S]*?<\/div><\/details>/)[0];
   const at = (s) => card.indexOf(s);
-  assert.ok(at('<div class="ask asks"><b>Your call</b>') > 0 && at('<div class="ask asks">') < at('<h4>Reproduce</h4>') && at('<h4>Reproduce</h4>') < at('<details class="more"><summary>Details</summary>'));
-  assert.ok(at('<details class="more">') < at('<h4>Cause and change</h4>') && at('<details class="more">') < at('full bug record'), 'the rest is folded');
+  assert.ok(at('<div class="ask asks"><b>Your call</b>') > 0 && at('<div class="ask asks">') < at('<summary>How it happens</summary>') && at('<summary>How it happens</summary>') < at('<details class="more"><summary>Details</summary>'));
+  assert.ok(at('<details class="more">') < at('<h4>What was changed</h4>') && at('<details class="more">') < at('full bug record'), 'the rest is folded');
   assert.doesNotMatch(html, /What users get|What happened|class="story"/, 'the trail on the row already tells what happened');
   assert.doesNotMatch(html, /For the tester|For the developer|For product/);
   const fixed = html.match(/<details class="bug [^"]*" id="BUG-001"[\s\S]*?<\/div><\/details>/)[0];
-  assert.match(fixed, /<p>Proved by check <a href="#C-0001">C-0001<\/a>\.<\/p>/, 'the proof of a fix is named on its bug');
+  assert.match(fixed, /<p>Its test: <a href="#C-0001">C-0001<\/a>\.<\/p>/, 'the proof of a fix is named on its bug');
   assert.match(html, /@media \(max-width:640px\)\{[^\n]*\.repro \.shot\{order:3\}\.shot img,\.shot video\{height:160px;width:auto;max-width:100%\}/, 'on a phone the screenshot is a thumbnail after the steps');
 });
 
@@ -465,7 +490,7 @@ test('a new bug says shipping would add it, until its fix is proven', async () =
   put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'needs-decision', summary: 'Asks you', decision: 'Change it?', inProduction: false } }),
     'bugs/BUG-001-a/bug.json': bug('BUG-001', { fix: { status: 'fixed', summary: 'Refuse it', risk: 'low', patch: 'fixes/1-BUG-001.patch', inProduction: false } }) });
   const html = pageHtml(await R.requestData(request));
-  assert.match(html.match(/id="BUG-002"[\s\S]*?<\/div><\/details>/)[0], /<p class="ships">New on this branch: shipping now would add it\.<\/p>/);
+  assert.match(html.match(/id="BUG-002"[\s\S]*?<\/div><\/details>/)[0], /<p class="ships">New in this change: shipping now would add it\.<\/p>/);
   assert.doesNotMatch(html.match(/id="BUG-001"[\s\S]*?<\/div><\/details>/)[0], /New on this branch/);
 });
 
@@ -498,14 +523,14 @@ test('times: a time from before the request started, or a request dated in the f
   assert.equal(d.bugs[0].times.found, null);
 });
 
-test('the page leads with what needs you: a headline, start here, the queue, then the rest folded', async () => {
+test('the page leads with what needs you: a headline, your decisions, then the rest folded', async () => {
   const { request, found, proved } = timedRun();
   const html = pageHtml(await R.requestData(request));
-  assert.match(html, /<h1[^>]*>1 thing needs you before shipping\.<\/h1>/);
-  assert.match(html, /class="start[^"]*"[\s\S]*Title BUG-002/);
-  assert.match(html, /<details class="group"><summary>[^<]*Fixed and proven/);
+  assert.match(html, /<h1[^>]*>1 decision waits for you before you ship\.<\/h1>/);
+  assert.match(html, /id="decisions"[\s\S]*Title BUG-002/);
+  assert.match(html, /<details class="group"><summary>[^<]*Fixed and verified/);
   assert.match(html, new RegExp(`found ${hhmm(found)}`));
-  assert.match(html, new RegExp(`proof passed ${hhmm(proved)}`));
+  assert.match(html, new RegExp(`test passed ${hhmm(proved)}`));
   assert.match(html, /class="ribbon"/);
   assert.match(html, /Explore<\/b>/);
 });
@@ -553,21 +578,21 @@ test('the page lists a part of the feature no charter aimed at, with why, under 
 });
 
 
-test('the step bar counts found, fixed, proven and what needs you', async () => {
+test('the header counts once: no second line of counters and no legend repeating the numbers', async () => {
   const html = pageHtml(await R.requestData(grown(project()).request));
-  assert.match(html, /class="ribbon"[^]*?<p class="counts">2 found · 1 fixed · 1 proven · 1 needs you<\/p>/);
+  assert.doesNotMatch(html, /<p class="counts">|<p class="key">/);
   assert.doesNotMatch(html, /prefers-color-scheme|light dark/, 'light only');
 });
 
 import { indexHtml as indexOf } from '../../skills/show-your-work/scripts/build-proof.mjs';
 
-test('expert review: each step in the timeline shows its clock times and the commit it ran on', async () => {
+test('expert review: each step in the timeline shows its clock times; the commit shows once, in the meta line', async () => {
   const { request, found } = timedRun();
   put(join(request, 'explore'), { 'evidence.jsonl': `${JSON.stringify({ bug: 'BUG-001', file: 'bugs/BUG-001-a/found.png', commit: 'abc1234', env: 'local', at: new Date(found).toISOString() })}\n` });
   const html = pageHtml(await R.requestData(request));
   const explore = html.match(/<li class="band[^"]*"[^>]*><b>Explore<\/b>[\s\S]*?<\/li>/)[0];
   assert.match(explore, new RegExp(`${hhmm(found)}–`));
-  assert.match(explore, /abc1234/);
+  assert.doesNotMatch(explore, /abc1234/);
 });
 
 test('expert review: auto mode says what it decided, and a ruling shows why and the cost on their own lines', async () => {
@@ -575,7 +600,7 @@ test('expert review: auto mode says what it decided, and a ruling shows why and 
   put(request, { 'decisions.md': 'Ruling: default: approved 5 claims as written — auto mode — a wrong claim proved\n' });
   const html = pageHtml(await R.requestData(request));
   assert.doesNotMatch(html, /not by a person/);
-  assert.match(html, /Auto mode made 1 choice for this whole run, without you/);
+  assert.match(html, /1 choice made automatically, without you/);
   assert.match(html, /<li>Approved 5 claims as written<br><span class="muted">If that was wrong: a wrong claim proved<\/span><\/li>/);
 });
 
@@ -607,7 +632,7 @@ test('gaps BUG-004 and BUG-019: the index shows questions apart from need-you, a
   assert.match(html, /<span class="k wait">1&nbsp;question<\/span>/);
 });
 
-test('bugs with the same id from two rounds get their own anchors, and the later one is labelled with its step', async () => {
+test('bugs with the same id from two rounds get their own anchors, and the later one is labelled with its round', async () => {
   const { request } = grown(project());
   const second = newStep(request, 'explore-2', ['charters', 'evidence']);
   put(second, { 'charters.json': { charters: [] }, 'bugs/BUG-001-z/bug.json': bug('BUG-001') });
@@ -616,17 +641,18 @@ test('bugs with the same id from two rounds get their own anchors, and the later
   assert.equal(new Set(anchors).size, anchors.length);
   const html = pageHtml(d);
   for (const a of anchors) assert.equal(html.split(`id="${a}"`).length, 2, `one row with id ${a}`);
-  assert.match(html, /<span>BUG-001 \(explore-2\)<\/span>/);
+  assert.match(html, /<span>BUG-001 \(round 2\)<\/span>/);
+  assert.match(html, /<span class="id">BUG-001 \(round 2\)<\/span>/, 'the card shows the unique id too');
 });
 
 test("BUG-011: a question's possible answers show as the skill's suggestion, never as a decision", async () => {
   const { request, step } = explore(project());
   put(step, { 'charters/T1.jsonl': `${JSON.stringify({ result: 'question', note: 'Per org or per owner?', answers: ['Per org: one limit shared by every owner', 'Per owner: each owner gets the full limit'] })}\n${JSON.stringify({ result: 'question', note: 'Is 10 the limit?' })}\n` });
   const html = pageHtml(await requestData(request));
-  assert.match(html, /<legend><code>Q-[0-9a-f]{4}<\/code> Per org or per owner\?<\/legend><p class="suggest">Possible answers, suggested by the skill, not decided:<\/p><label class="pick"><input type="radio" name="Q-[0-9a-f]{4}" value="Per org: one limit shared by every owner"><span>Per org: one limit shared by every owner<\/span><\/label><label class="pick"><input type="radio" name="Q-[0-9a-f]{4}" value="Per owner: each owner gets the full limit">/);
+  assert.match(html, /<legend><code>Q-[0-9a-f]{4}<\/code> Per org or per owner\?<\/legend><p class="suggest">Suggested answers, not decided:<\/p><label class="pick"><input type="radio" name="Q-[0-9a-f]{4}" value="Per org: one limit shared by every owner"><span>Per org: one limit shared by every owner<\/span><\/label><label class="pick"><input type="radio" name="Q-[0-9a-f]{4}" value="Per owner: each owner gets the full limit">/);
   assert.match(html, /<legend><code>Q-[0-9a-f]{4}<\/code> Is 10 the limit\?<\/legend><input type="text" name="Q-[0-9a-f]{4}-own" placeholder="Your answer"/);
   assert.doesNotMatch(html, /<input type="radio"[^>]* checked/, 'nothing is picked for the person');
-  assert.match(html, /2 questions wait for you\./);
+  assert.match(html, /<a href="#decisions">Answer 2 questions<\/a>/);
 });
 
 test('questions: the form copies one "answer <Q-id>: ..." line per answered question, own words before a pick', async () => {
@@ -641,9 +667,9 @@ test('questions: the form copies one "answer <Q-id>: ..." line per answered ques
   const els = { 'answer-lines': { value: '' }, 'copy-state': {}, 'copy-answers': { addEventListener() {} } };
   new Function('document', 'location', 'localStorage', 'navigator', script)({ getElementById: (id) => els[id], querySelectorAll: () => qs, addEventListener() {} }, { pathname: '/r' }, { getItem: () => null, setItem() {} }, {});
   assert.equal(els['answer-lines'].value, 'answer Q-1111: Per org\nanswer Q-2222: Yes, 10');
-  assert.equal(html.match(/<script>/g).length, 1);
+  assert.equal(html.match(/id="copy-answers"/g).length, 1);
   const none = explore(project());
-  assert.doesNotMatch(pageHtml(await requestData(none.request)), /<script>/, 'a page with no open question has no script');
+  assert.doesNotMatch(pageHtml(await requestData(none.request)), /copy-answers/, 'a page with no open question has no answer bar');
 });
 
 test('a step folder made again after the run (a copy or a checkout) never shows a start after its end', async () => {
@@ -663,10 +689,10 @@ test('review: auto choices fold into the banner, each with its step and a real r
   put(proof, { 'decisions.md': 'Ruling: default: approved 2 claims as written — auto mode — a wrong claim proved\nRuling: default: used Chrome — the only browser connected — another browser untested\n' });
   const html = pageHtml(await requestData(request));
   const banner = html.match(/<details class="banner">[\s\S]*?<\/details>/)[0];
-  assert.match(banner, /<summary>Auto mode made 2 choices for this whole run, without you<\/summary>/);
-  assert.match(banner, /<li>Approved 2 claims as written <span class="muted">\(while proving\)<\/span><br><span class="muted">If that was wrong: a wrong claim proved<\/span><\/li>/);
-  assert.match(banner, /<li>Used Chrome <span class="muted">\(while proving\)<\/span><br><span class="muted">Why: the only browser connected<\/span>/);
-  assert.ok(html.indexOf('Then, in this order') < html.indexOf('Questions for you'), 'run notes come after the queue');
+  assert.match(banner, /<summary>2 choices made automatically, without you<\/summary>/);
+  assert.match(banner, /<li>Approved 2 claims as written <span class="muted">\(while testing\)<\/span><br><span class="muted">If that was wrong: a wrong claim proved<\/span><\/li>/);
+  assert.match(banner, /<li>Used Chrome <span class="muted">\(while testing\)<\/span><br><span class="muted">Why: the only browser connected<\/span>/);
+  assert.ok(html.indexOf('id="decisions"') < html.indexOf('class="banner"'), 'run notes come after the decisions');
 });
 
 test("review: each card shows its bug id, and the page draws no position numbers that look like ids", async () => {
@@ -705,15 +731,15 @@ test('questions: the headline links to them, each says how to answer, and an ans
   put(step, { 'charters/T1.jsonl': `${JSON.stringify({ n: 2, result: 'question', note: 'Per org or per owner?' })}\n${JSON.stringify({ n: 5, result: 'question', note: 'Is 10 the limit?' })}\n` });
   const [q1, q2] = (await import('../../skills/show-your-work/scripts/questions.mjs')).stepQuestions(step);
   let html = pageHtml(await requestData(request));
-  assert.match(html, /<h1[^>]*>[^<]*<a href="#questions">2 questions wait for you\.<\/a><\/h1>/);
-  assert.match(html, /<dt id="questions"[^>]*>Questions for you<\/dt>/);
-  assert.match(html, new RegExp(`or reply in chat yourself: <code>answer ${q1.id}: your answer</code>`));
+  assert.match(html, /<h1[^>]*>2 decisions wait for you before you ship\.<\/h1>\n<ul class="parts"><li><a href="#decisions">Answer 2 questions<\/a><\/li><\/ul>/);
+  assert.match(html, /<div class="ask asks question">/, 'each question is one of your decisions');
+  assert.match(html, new RegExp(`or reply <code>answer ${q1.id}: your answer</code>`));
   put(join(request, '..'), { 'answers.jsonl': `${JSON.stringify({ id: q1.id, question: q1.note, answer: 'Per org', at: '2026-11-01T10:00:00Z' })}\n` });
   const d = await requestData(request);
   html = pageHtml(d);
   assert.equal(d.counts.questions, 1);
-  assert.match(html, /1 question waits for you\./);
-  const asked = html.slice(html.indexOf('Questions for you'), html.indexOf('Your answers'));
+  assert.match(html, /<a href="#decisions">Answer 1 question<\/a>/);
+  const asked = html.slice(html.indexOf('id="decisions"'), html.indexOf('Your answers'));
   assert.ok(asked.includes(q2.id) && !asked.includes(q1.id), 'only the open question waits');
   assert.match(html, new RegExp(`<dt>Your answers</dt><dd><ul><li><code>${q1.id}</code> Per org or per owner\\?<br>You said: <b>Per org</b></li></ul>`));
 });
@@ -722,7 +748,7 @@ test("a fix's failed check sits in a group whose name does not promise proof", a
   const { request } = grown(project());
   const html = pageHtml(await requestData(request));
   assert.doesNotMatch(html, /Checks that prove the fixes/);
-  assert.match(html, /<summary>Checks of the fixes/);
+  assert.match(html, /<summary>Tests of the fixes/);
 });
 
 test("a request page folds in its runs' learnings, each once, with who wrote it and its source", async () => {
@@ -730,7 +756,7 @@ test("a request page folds in its runs' learnings, each once, with who wrote it 
   put(step, { 'learnings.jsonl': [{ by: 'planner', learning: 'Free plans stop at <10> invites.', source: 'src/plans.ts:12' }, { by: 'T1', learning: 'Revoked invites stay listed.', source: 'src/invites.ts:40' }].map((l) => JSON.stringify(l)).join('\n') + '\nnot json\n' });
   put(join(step, '..', 'explore-2'), { 'learnings.jsonl': `${JSON.stringify({ by: 'planner', learning: 'Free plans stop at <10> invites.', source: 'src/plans.ts:12' })}\n` });
   const html = pageHtml(await requestData(request));
-  assert.match(html, /<details><summary>Learnings from the code and docs \(2\)<\/summary><ul><li>Free plans stop at &#60;10&#62; invites\.<br><span class="muted">planner · src\/plans\.ts:12<\/span><\/li><li>Revoked invites stay listed\.<br><span class="muted">T1 · src\/invites\.ts:40<\/span><\/li><\/ul><\/details>/);
+  assert.match(html, /<details><summary>What the testers learned about the app \(2\)<\/summary><ul><li>Free plans stop at &#60;10&#62; invites\.<br><span class="muted">planner · src\/plans\.ts:12<\/span><\/li><li>Revoked invites stay listed\.<br><span class="muted">T1 · src\/invites\.ts:40<\/span><\/li><\/ul><\/details>/);
   const { request: bare } = explore(project());
   assert.doesNotMatch(pageHtml(await requestData(bare)), /Learnings from/);
 });
@@ -752,8 +778,8 @@ test('a proven fix that changes production or carries risk is named as one to re
   const d = await R.requestData(request);
   assert.deepEqual([d.bugs[0].state, d.bugs[0].needsYou], ['Fixed and proven', true]);
   const html = pageHtml(d);
-  assert.match(html, /1 proven fix waits for your review\./);
-  assert.match(html, /Review this fix before shipping: it changes what production does; medium risk: Visible on the Team page\./);
+  assert.match(html, /<ul class="parts"><li>Review 1 fix<\/li><li>Decide what to do with 1 bug<\/li><\/ul>/);
+  assert.match(html, /Review this fix before you ship\. It changes what production does\. Medium risk \(visible on the Team page\)\./);
 });
 
 test('a decision box offers choices and copies a "decide <bug> of <step folder>: ..." line, with or without open questions', async () => {
@@ -764,7 +790,7 @@ test('a decision box offers choices and copies a "decide <bug> of <step folder>:
   assert.match(html, new RegExp(`<fieldset data-line="decide BUG-002 of ${where}">`));
   assert.match(html, /<input type="radio" name="d-BUG-002" value="Yes, change it">[\s\S]*?<input type="radio" name="d-BUG-002" value="No, keep it as it is">/);
   assert.match(html, /<button type="button" id="copy-answers">Copy answers<\/button>/);
-  assert.equal(html.match(/<script>/g).length, 1, 'the script runs for decisions alone');
+  assert.match(html, /id="copy-answers"/, 'the answer script runs for decisions alone');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const field = (line, own, picked) => ({ dataset: { line }, own: { type: 'text', value: own }, radio: picked && { type: 'radio', checked: true, value: picked },
     querySelector(s) { return s === 'input[type=text]' ? this.own : s === 'input[type=radio]:checked' ? this.radio : null; }, querySelectorAll() { return this.radio ? [this.radio] : []; } });
@@ -826,12 +852,11 @@ test('a bug a later round found again is counted once: the first card says where
   // Each card names the rounds that found its bug, in its head and, when found again, with each round's bug id.
   const html = pageHtml(d);
   const card = (id) => html.match(new RegExp(`<details class="bug [^"]*" id="${id}"[\\s\\S]*?</details>\\n</div></details>`))[0];
-  assert.match(card('BUG-001'), /<span class="round">Round 1<\/span>/);
-  assert.match(card('BUG-002'), /<span class="round">Rounds 1 and 2<\/span>/);
+  assert.doesNotMatch(html, /class="round"/, 'the unique id and the found-again line say the round');
   assert.match(card('BUG-002'), /Found in round 1 as BUG-002, and again in round 2 as BUG-001\./);
   // Two testers of one round can find it too: the head names each round once.
   put(request, { 'explore/bugs/BUG-003-c/bug.json': bug('BUG-003', { fix: { status: 'needs-decision', summary: 'Same as round 1 BUG-002', decision: 'Change it?' } }) });
-  assert.match(pageHtml(await requestData(request)), /<span class="round">Rounds 1 and 2<\/span>[\s\S]*?Found in round 1 as BUG-002, and again in round 1 as BUG-003 and round 2 as BUG-001\./);
+  assert.match(pageHtml(await requestData(request)), /Found in round 1 as BUG-002, and again in round 1 as BUG-003 and round 2 as BUG-001\./);
   // A repeat whose first bug is not on this page still shows.
   put(second, { 'bugs/BUG-001-z/bug.json': bug('BUG-001', { fix: { status: 'needs-decision', summary: 'Same as round 4 BUG-009', decision: 'Change it?' } }) });
   assert.equal((await requestData(request)).counts.found, 3);
@@ -844,13 +869,13 @@ test('a proven fix auto mode or gap mode chose at low or medium risk does not wa
   const d = await requestData(request);
   assert.equal(d.bugs[0].needsYou, false);
   const html = pageHtml(d);
-  assert.match(html, /Auto mode made 1 choice for this whole run, without you/);
+  assert.match(html, /1 choice made automatically, without you/);
   assert.match(html, /<a href="#BUG-001">BUG-001<\/a>: refuse ids of other orgs with 404/);
-  assert.match(html, /Auto mode decided: <b>refuse ids of other orgs with 404<\/b>/);
+  assert.match(html, /Decided automatically: <b>refuse ids of other orgs with 404<\/b>/);
   assert.match(html, /name="d-BUG-001" value="Undo the fix">/);
   put1({ source: 'gap: an empty-list message' });
   assert.equal((await requestData(request)).bugs[0].needsYou, false);
-  assert.match(pageHtml(await requestData(request)), /Added in gap mode: <b>an empty-list message<\/b>/);
+  assert.match(pageHtml(await requestData(request)), /Added as a missing feature: <b>an empty-list message<\/b>/);
   // At high risk, as a security fix, or before it is proven, it still waits for you.
   put1({ source: 'auto: refuse ids of other orgs', risk: 'high' });
   assert.equal((await requestData(request)).bugs[0].needsYou, true);
@@ -863,4 +888,219 @@ test('a report card is labelled with its target\'s label, and shows a device onl
   put(step, { 'targets.json': { targets: { queue: { label: 'Queue', provenBy: 'file', viewports: false, found: [] } } }, 'bugs/BUG-020-q/bug.json': bug('BUG-020', { target: 'queue', viewport: 'mobile' }) });
   const html = pageHtml(await requestData(request));
   assert.match(html, /<span class="id">BUG-020<\/span><span class="where">Queue<\/span>/);
+});
+
+test('a failed or unproven check of its own gets an answer box; a decided one shows the decision and no longer needs you', async () => {
+  const p = project();
+  const request = newRequest(p, 'billing', 'prove', new Date(2026, 10, 3, 14, 30));
+  const proof = newStep(request, 'proof');
+  put(proof, { 'claims.json': { claims: [] } });
+  writeResult(proof, { claims: [
+    { id: 'C-0002', statement: 'B', verdict: 'disproved', cases: [{ id: 'a', result: 'fail', actual: 'No.' }], evidence: [] },
+    { id: 'C-0003', statement: 'C', verdict: 'not-proven', cases: [{ id: 'a', result: 'blocked' }], evidence: [] }], problems: [] });
+  const at = `billing/${basename(request)}/proof`;
+  let html = pageHtml(await requestData(request));
+  assert.match(html, new RegExp(`data-line="decide C-0002 of [^"]*${at}"`));
+  assert.match(html, /value="Fix the app"[\s\S]*value="Test again"[\s\S]*value="Drop this test"/);
+  const c3 = html.slice(html.indexOf('id="C-0003"'));
+  assert.match(c3, /data-line="decide C-0003 of /);
+  assert.doesNotMatch(c3.slice(0, c3.indexOf('</details>\n')), /value="Fix the app"/, 'nothing failed, so nothing to fix yet');
+  writeFileSync(join(p, 'billing', 'answers.jsonl'), `${JSON.stringify({ id: `${basename(request)}/proof/C-0002`, answer: 'Leave it as it is' })}\n`);
+  const data = await requestData(request);
+  assert.equal(data.counts.needsYou, 1);
+  html = pageHtml(data);
+  assert.match(html, /You decided: <b>Leave it as it is<\/b>/);
+  assert.doesNotMatch(html, /data-line="decide C-0002 of /);
+});
+
+test('every bug that waits on you can be answered: a fix whose proof never finished, and a kept bug with no question', async () => {
+  const { request, step } = explore(project());
+  put(step, { 'bugs/BUG-001-a/bug.json': bug('BUG-001', { fix: { status: 'fixed', summary: 'Fixed', risk: 'low' } }),
+    'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'wont-fix', summary: 'Kept' } }) });
+  const html = pageHtml(await requestData(request));
+  const card = (id) => html.slice(html.indexOf(`id="${id}"`), html.indexOf('</details>\n', html.indexOf(`id="${id}"`)));
+  assert.match(card('BUG-001'), /data-line="decide BUG-001 of [^"]+"[\s\S]*value="Test again"[\s\S]*value="Ship it"[\s\S]*value="Undo the fix"/);
+  assert.match(card('BUG-002'), /It was left as it is\. Fix it anyway, or leave it\?[\s\S]*value="Fix it anyway"/);
+});
+
+test('a check proven again in a later step shows once, with its latest verdict', async () => {
+  const p = project();
+  const request = newRequest(p, 'billing', 'prove', new Date(2026, 10, 3, 14, 30));
+  const one = newStep(request, 'proof');
+  put(one, { 'claims.json': { claims: [] } });
+  writeResult(one, { claims: [{ id: 'C-0002', statement: 'B', verdict: 'disproved', cases: [], evidence: [] }], problems: [] });
+  const two = newStep(request, 'proof');
+  put(two, { 'claims.json': { claims: [] } });
+  writeResult(two, { claims: [{ id: 'C-0002', statement: 'B', verdict: 'proven', cases: [], evidence: [] }], problems: [] });
+  const data = await requestData(request);
+  assert.deepEqual([data.counts.checks, data.counts.checksProven, data.counts.needsYou], [1, 1, 0]);
+});
+
+test('a finished report says Not run for a check no proof finished, never Being checked', async () => {
+  const p = project();
+  const request = newRequest(p, 'billing', 'prove', new Date(2026, 10, 3, 14, 30));
+  const proof = newStep(request, 'proof');
+  put(proof, { 'claims.json': { claims: [{ id: 'C-0009', statement: 'Z', cases: [{ id: 'a', do: 'Do it', expect: 'It works' }] }] } });
+  const data = await requestData(request);
+  assert.equal(data.live, false);
+  assert.equal(data.promises[0].verdict, 'not-run');
+  assert.doesNotMatch(pageHtml(data), /Being checked/);
+});
+
+test('a fix you asked for asks again once it is made: an old decision never hides the new question', async () => {
+  const { request, step } = grown(project(), { checked: false });
+  put(step, { 'bugs/BUG-001-a/bug.json': bug('BUG-001', { fix: { status: 'fixed', summary: 'Refuse it', risk: 'high', decided: 'Yes, change it', patch: 'fixes/1-BUG-001.patch' } }) });
+  const html = pageHtml(await requestData(request));
+  const card = html.slice(html.indexOf('id="BUG-001"'), html.indexOf('</details>\n', html.indexOf('id="BUG-001"')));
+  assert.match(card, /data-line="decide BUG-001 of [^"]+"[\s\S]*value="Ship it"/);
+  assert.doesNotMatch(card, /You decided/);
+  assert.doesNotMatch(card, /<p><\/p>/);
+});
+
+test('plain reading: a long note folds after its first sentence, a question comes before its source, and lists say each thing once', async () => {
+  const { request, step } = explore(project());
+  put(step, { 'charters/T1.jsonl': `${JSON.stringify({ result: 'question', note: 'Owner decision docs/spec.md:105: the invoice keeps the old address. Resend it as it is?' })}\n`,
+    'charters.json': { untested: ['Google Calendar: no account', 'Google Calendar: no account'], charters: [{ id: 'N1', mission: 'M', notCovered: 'not run: batch full' }, { id: 'P1', mission: 'M2', notCovered: 'Legacy checkout' }] } });
+  const html = pageHtml(await requestData(request));
+  assert.match(html, /<legend><code>Q-[0-9a-f]{4}<\/code> The invoice keeps the old address\. Resend it as it is\? <span class="muted">\(docs\/spec\.md:105\)<\/span><\/legend>/);
+  const notTested = html.slice(html.indexOf('<dt>Not tested</dt>'));
+  assert.equal(notTested.split('Google Calendar: no account').length, 2, 'once');
+  assert.doesNotMatch(notTested, /batch full|P1: /);
+  assert.match(notTested, /<li>Legacy checkout /);
+  const long = `Needs a store using the built-in default template; this store has custom defaults. ${'QA Quote Branded, '.repeat(8)}and more.`;
+  const p = project();
+  const req = newRequest(p, 'billing', 'prove', new Date(2026, 10, 3, 14, 30));
+  const proof = newStep(req, 'proof');
+  put(proof, { 'claims.json': { claims: [] } });
+  writeResult(proof, { claims: [{ id: 'C-0003', statement: 'C', verdict: 'not-proven', cases: [{ id: 'a', result: 'blocked', note: long }], evidence: [] }], problems: [] });
+  assert.match(pageHtml(await requestData(req)), /Why it could not run: Needs a store using the built-in default template; <details class="more-note"><summary>More<\/summary>this store has custom defaults/);
+});
+
+test('the timeline runs in time order: a fix undone after its proof passed reads found, proof passed, fix undone', async () => {
+  const { request, found, proved } = timedRun();
+  const html = pageHtml(await R.requestData(request));
+  for (const t of html.match(/<span class="trail">[\s\S]*?<\/span><\/summary>/g) ?? []) {
+    const times = [...t.matchAll(/(\d\d:\d\d)/g)].map((m) => m[1]);
+    assert.deepEqual(times, [...times].sort(), t);
+  }
+  assert.ok(found && proved);
+});
+
+test('a fix undone because its test still failed, or because it broke another, asks in plain words, the way its buttons answer', async () => {
+  const { request, step } = grown(project());
+  put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'not-fixed', summary: 'Fixed with BUG-008', decision: 'The fix did not hold: Where the selected country is Canada, checkout asks for a province. Fix by hand?' } }) });
+  const html = pageHtml(await requestData(request));
+  assert.match(html, /The fix didn&#39;t work: its test still fails \(&#34;Where the selected country is Canada, checkout asks for a province&#34;\)\. Try again, or leave it\?/);
+  assert.doesNotMatch(html, /Fix by hand\?/);
+  put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'not-fixed', summary: 'x', decision: 'Broke The invite list shows 10 rows. Fix by hand?' } }) });
+  assert.match(pageHtml(await requestData(request)), /The fix broke something else, so it was undone: &#34;The invite list shows 10 rows&#34;\. Try the fix again, or leave it\?/);
+});
+
+test('your decisions open on what blocks shipping: a bug new on this branch before a worse-looking one already in production', async () => {
+  const { request, step } = grown(project());
+  put(step, { 'bugs/BUG-001-a/bug.json': bug('BUG-001', { severity: 'minor', fix: { status: 'not-fixed', summary: 'x', inProduction: true, decision: 'The fix did not hold: A. Fix by hand?' } }),
+    'bugs/BUG-002-b/bug.json': bug('BUG-002', { severity: 'minor', fix: { status: 'needs-decision', summary: 'y', inProduction: false, decision: 'Change it?' } }) });
+  const html = pageHtml(await requestData(request));
+  assert.match(html.slice(html.indexOf('id="decisions"')), /^[^]*?id="BUG-002"/);
+});
+
+test('a finished run with nothing to decide says it is ready to ship; the stage bar moves to the footer', async () => {
+  const { request } = grown(project());
+  const p = dirname(dirname(request));
+  put(join(request, 'explore'), { 'bugs/BUG-002-b/bug.json': bug('BUG-002') });
+  const html = pageHtml(await requestData(request));
+  assert.match(html, /<h1 class="good">Ready to ship: nothing needs you\.<\/h1>/);
+  assert.match(html, /<summary>How long each stage took<\/summary><ol class="ribbon">/);
+  assert.ok(p);
+});
+
+test('a filter shows only some cards: by what you do with them, and by kind when there is more than one', async () => {
+  const { request, step } = grown(project());
+  put(step, { 'bugs/BUG-003-c/bug.json': bug('BUG-003', { kind: 'copy' }) });
+  const html = pageHtml(await requestData(request));
+  const bar = html.match(/<nav class="filter"[\s\S]*?<\/nav>/)[0];
+  // Your decisions are above, one at a time: the filter covers everything else.
+  assert.match(bar, /data-v="all" aria-pressed="true">All <span class="n">3<\/span>/);
+  assert.doesNotMatch(bar, /Needs you/);
+  assert.match(bar, /data-v="fixed"[^>]*>Fixed <span class="n">1<\/span>/);
+  assert.match(bar, /Kind:[\s\S]*data-v="copy"[^>]*>Wording <span class="n">1<\/span>/);
+  assert.match(html, /id="BUG-003" data-status="work" data-kind="copy"/);
+  assert.match(html, /<script>[\s\S]*sessionStorage[\s\S]*dataset\.status[\s\S]*<\/script>/);
+});
+
+test('a short list of real decisions: the tool’s unfinished work is one retest, a bug left as it is is optional, and they show one at a time', async () => {
+  const p = project();
+  const request = newRequest(p, 'billing', 'prove', new Date(2026, 10, 3, 14, 30));
+  const proof = newStep(request, 'proof');
+  put(proof, { 'claims.json': { claims: [] } });
+  writeResult(proof, { claims: [
+    { id: 'C-0001', statement: 'A', verdict: 'disproved', cases: [{ id: 'a', result: 'fail' }], evidence: [] },
+    { id: 'C-0002', statement: 'B', verdict: 'not-proven', cases: [{ id: 'a', result: 'blocked', note: 'needs setup: a lapsed plan' }], evidence: [] },
+    { id: 'C-0003', statement: 'C', verdict: 'not-proven', cases: [{ id: 'a', result: 'blocked' }], evidence: [] }], problems: [] });
+  const d = await requestData(request);
+  assert.equal(d.counts.needsYou, 2, 'one failed test and one retest for both tests that could not run');
+  const html = pageHtml(d);
+  assert.match(html, /<h1[^>]*>2 decisions wait for you before you ship\.<\/h1>/);
+  // The chat says what the page says, in the same words and counts.
+  assert.deepEqual(await headline(request), ['2 decisions wait for you before you ship.', '- Fix, retest or drop 1 failed test', "- Test again the 2 things that couldn't be checked (one click)"]);
+  assert.match(html, /<fieldset data-line="retest" data-lines="decide C-0002 of [^"]+\ndecide C-0003 of [^"]+">/);
+  assert.match(html, /Test all 2 again/);
+  assert.match(html, /<p class="progress" hidden>Decision <b class="at">1<\/b> of 2<\/p>/);
+  const todo = html.match(/<ol class="todo">([\s\S]*?)<\/ol>\n<p class="step-nav"/)[1];
+  assert.equal(todo.split(/\n<li[ >]/).length + (todo.startsWith('<li') ? 0 : -1), 2, 'one list item per decision, whatever lists the cards hold');
+  assert.match(html, /<script>[\s\S]*Next decision[\s\S]*Show all at once[\s\S]*<\/script>/);
+  // Each test that could not run keeps its own optional box under Everything else.
+  assert.match(html, /<summary>Couldn&#39;t run <span class="n">2<\/span><\/summary>/);
+  assert.match(html.slice(html.indexOf('class="rest"')), /data-line="decide C-0002 of [^"]+" data-optional/);
+
+  // A bug auto mode left as it is is optional: it is out of the count, and the headline says you can still ask for a fix.
+  const { request: r2, step } = grown(project());
+  put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'wont-fix', summary: 'Kept', decision: 'Change it?' } }) });
+  const d2 = await requestData(r2);
+  assert.equal(d2.counts.needsYou, 0);
+  const html2 = pageHtml(d2);
+  assert.match(html2, /<p class="later">Optional: 1 bug was left as it is; you can still ask for a fix\.<\/p>/);
+});
+
+test('every bug offers Not a bug, with your words as its reason; a bug you called not a bug sits in its own group with the reason', async () => {
+  const { request, step } = grown(project());
+  let html = pageHtml(await requestData(request));
+  const card = (h, id) => h.slice(h.indexOf(`id="${id}"`), h.indexOf('</details>\n', h.indexOf(`id="${id}"`)));
+  assert.match(card(html, 'BUG-002'), /value="Yes, change it"[\s\S]*value="Not a bug"/);
+  assert.match(html, /return t \? 'Not a bug: ' \+ t : 'Not a bug'/, 'the words beside Not a bug are its reason');
+  put(step, { 'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'wont-fix', summary: 'Asks you', decided: 'Not a bug: the country follows the org', invalid: 'the country follows the org' } }) });
+  const d = await requestData(request);
+  assert.deepEqual([d.bugs[1].state, d.bugs[1].needsYou, d.counts.needsYou], ['Not a bug', false, 0]);
+  html = pageHtml(d);
+  assert.match(html, /<summary>Not a bug <span class="n">1<\/span><\/summary>[\s\S]*You decided: <b>Not a bug: the country follows the org<\/b>/);
+});
+
+test('a decision on one bug covers a bug fixed by the same change, even one decided before that rule', async () => {
+  const { request, step, proof } = grown(project());
+  put(proof, { 'fix-claims.json': [{ bug: join(step, 'bugs/BUG-001-a'), claim: 'C-0001' }, { bug: join(step, 'bugs/BUG-002-b'), claim: 'C-0001' }] });
+  writeResult(proof, { claims: [{ id: 'C-0001', statement: 'It works', verdict: 'proven', cases: [], evidence: [] }], problems: [] });
+  put(step, { 'bugs/BUG-001-a/bug.json': bug('BUG-001', { fix: { status: 'fixed', summary: 'Refuse it', risk: 'high', patch: 'fixes/1-BUG-001.patch', decided: 'Ship it' } }),
+    'bugs/BUG-002-b/bug.json': bug('BUG-002', { fix: { status: 'fixed', summary: 'Fixed with BUG-001', risk: 'high', patch: 'fixes/1-BUG-001.patch' } }) });
+  const d = await requestData(request);
+  assert.deepEqual(d.bugs.map((b) => [b.id, b.needsYou]), [['BUG-001', false], ['BUG-002', false]]);
+});
+
+test('a fix run that ends after your answer and still asks has asked again: the box comes back, with your earlier answer', async () => {
+  const p = project();
+  const request = newRequest(p, 'pay-page', 'improve', new Date(2026, 10, 10, 0, 11));
+  const step = newStep(request, 'explore');
+  const fix = newStep(request, 'fix');
+  const asked = (decidedAt) => bug('BUG-017', { fix: { status: 'needs-decision', summary: 'No code changed.', decision: 'Change those lines?', decided: 'make sure it holds', decidedAt } });
+  put(step, { 'charters.json': { charters: [] }, 'bugs/BUG-017-a/bug.json': asked('2026-11-10T16:19:59.000Z') });
+  put(fix, { 'rounds.json': { feature: 'pay-page', rounds: [{ n: 1, explore: step, verify: null }] } });
+  writeResult(fix, { generatedAt: '2026-11-10T17:10:32.000Z' });
+  let d = await requestData(request);
+  let html = pageHtml(d);
+  assert.equal(d.bugs[0].needsYou, true);
+  assert.match(html, /Change those lines\?<\/p><p class="muted">You answered before: make sure it holds<\/p><fieldset data-line="decide BUG-017 of /);
+  // An answer given after the fix run is still waiting for the next one: no box until then.
+  put(step, { 'bugs/BUG-017-a/bug.json': asked('2026-11-10T17:30:00.000Z') });
+  html = pageHtml(await requestData(request));
+  assert.match(html, /You decided: <b>make sure it holds<\/b>/);
+  assert.doesNotMatch(html, /<fieldset data-line="decide BUG-017 of /);
 });

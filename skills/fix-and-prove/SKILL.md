@@ -152,11 +152,13 @@ Self-improvement: after §5, start the next round at §3 until the rounds are do
 
 ## Decisions from a page
 
-A page's Copy answers gives lines such as `decide BUG-003 of .evident/invites/2026-11-01-1941-explore-and-fix/explore: Yes, change it`. Hand any `answer Q-...` lines among them to show-your-work's `SKILL.md` `## Answering a question`. Record every `decide` line in one command from the app repo: `node <skill directory>/scripts/decide.mjs '<step folder>' BUG-NNN '<decision>'`, one call per line joined with `&&`. Show its lines, then:
+A page's Copy answers gives lines such as `decide BUG-003 of .evident/invites/2026-11-01-1941-explore-and-fix/explore: Yes, change it`, and `decide C-02e4 of .../proof: Fix the app` for a test (check) that failed or gave no result. Hand any `answer Q-...` lines among them to show-your-work's `SKILL.md` `## Answering a question`. A line with the user's own words instead of a choice: read them first. When they say the app is right as it is (intended, by design, invalid, how it should work), pass `Drop this test: <their words, verbatim>` for a check (C-id) and `Not a bug: <their words, verbatim>` for a bug, so its tests leave the ledger with their reason and later runs learn the rule; otherwise pass their words as they are. Record every `decide` line in one command from the app repo: `node <skill directory>/scripts/decide.mjs '<step folder>' <BUG-NNN or C-id> '<decision>'`, one call per line joined with `&&`. Show its lines, then:
 
-- `Kept:` and `Shipped:`: nothing more to do.
+- `Kept:`, `Not a bug:`, `Retired:` (a dropped test, or a bug's tests, leave the ledger), `Also <bug> of <step>: the same change` (the decision covers a bug fixed by the same change) and `Shipped:`: nothing more to do.
 - `Undo: <bug> commit <id>`: `git revert --no-edit <id>`. `Undo: <bug> patch <file>`: `git apply -R '<file>'`. Then restart as §5 step 1 says, and rebuild the ledger so the bug's claim is no longer proven: `node <show-your-work directory>/scripts/build-proof.mjs <verify run> --ledger <ledger dir> <its reproofs, oldest first>`, with the round's `verify` and `reproofs` from the fix step's `rounds.json`.
 - `Fix: <bug folder>`: run Fix a report mode on exactly those bug folders: they are the context, so ask nothing. The fixer reads each bug's decision.
+- `Prove: C-id of <proof step>`: follow show-your-work's "re-prove run <proof step>" (`REPROVE.md`). `Prove: BUG-NNN of <step>`: the same for the proof step whose `fix-claims.json` names that bug's folder. Several `Prove:` lines of one proof step are one re-prove.
+- `Fix:` lines for a check name the bug its provers filed, or the one `decide.mjs` filed from its failed case: run Fix a report mode on them as above.
 
 ## Auto mode
 
