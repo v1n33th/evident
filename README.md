@@ -18,7 +18,7 @@ Pick one. Each installs a tagged release, so you run the files you reviewed.
 ### Claude Code plugin
 
 ```bash
-git clone --depth 1 --branch v0.1.1 https://github.com/v1n33th/evident ~/evident
+git clone --depth 1 --branch v0.1.2 https://github.com/v1n33th/evident ~/evident
 ```
 
 ```bash
@@ -34,7 +34,7 @@ The skills show up as `evident:bug-bash`, `evident:show-your-work` and so on. To
 ### Claude Code skills folder
 
 ```bash
-git clone --depth 1 --branch v0.1.1 https://github.com/v1n33th/evident ~/.claude/skills/evident
+git clone --depth 1 --branch v0.1.2 https://github.com/v1n33th/evident ~/.claude/skills/evident
 ```
 
 ```bash
@@ -58,7 +58,7 @@ Clone as above, then:
 ### Other agents
 
 ```bash
-npx skills add https://github.com/v1n33th/evident#v0.1.1 --skill '*'
+npx skills add https://github.com/v1n33th/evident#v0.1.2 --skill '*'
 ```
 
 Keep the four skills side by side: their scripts import each other's.

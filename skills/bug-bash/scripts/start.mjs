@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { notAStep, projectDir, runTargets } from '../../show-your-work/scripts/build-proof.mjs';
-import { driverFor, fillCommand, findDefinition, parseDefinition } from '../../evidence/scripts/definitions.mjs';
+import { driverFor, fillCommand, findDefinition, methodsFor, parseDefinition } from '../../evidence/scripts/definitions.mjs';
 import { fieldsFile } from '../../evidence/scripts/log.mjs';
 import { issueTypes, listBugs } from '../../evidence/scripts/new-bug.mjs';
 import { left, leftLine } from './step.mjs';
@@ -78,10 +78,12 @@ function resolveTarget(run, project, env, target) {
 }
 
 // The capture rules the explorer needs: the target's Connect, Drive, Capture and Sign in, then the driver's Weak spots and Forms.
-function capture(targetDef, driver, driverDef) {
+// `moving`: video or gif when the environment picks it for this target and the driver records it; each bug's retry is recorded then.
+function capture(targetDef, driver, driverDef, moving) {
   const own = driverDef && [driverDef.sections['Weak spots'] && `- Weak spots: ${driverDef.sections['Weak spots']}`, driverDef.sections.Forms && (driverDef.sections.Forms.startsWith('- ') ? driverDef.sections.Forms : `- Forms: ${driverDef.sections.Forms}`)].filter(Boolean).join('\n');
   const parts = ['Connect', 'Drive', 'Capture', 'Sign in'].filter((n) => targetDef?.sections[n]).map((n) => `### ${n}\n${targetDef.sections[n]}`);
   if (own) parts.push(`### ${driver.name}\n${own}`);
+  if (moving) parts.push(`### Bugs\nRecord each bug's retry (Bugs step 4) as \`$B/repro.${moving === 'gif' ? 'gif' : 'webm'}\` with your tool's ${moving} form: start just before the retry's first action, and stop once the failure has been on screen for about 2 s. Keep \`found.png\` too: it is the still a reader sees first.`);
   return parts.join('\n\n') || 'none';
 }
 
@@ -133,6 +135,7 @@ export function start(run, id, { commit, log = 'evidence.jsonl', session = id, n
   if (!targetDef) throw new Error(`no definition for target ${target}: ask for evidence setup to define it`);
   const tool = driver?.name ?? 'shell';
   const label = entry.label ?? targetDef?.settings.label ?? target;
+  const moving = ['video', 'gif'].find((m) => methodsFor(label, env).includes(m) && driverDef?.settings.methods.includes(m));
   const url = entry.address ?? line(section(env, 'Targets'), label) ?? line(targetSection, label) ?? (target === 'web' ? line(targetSection, 'App') : null);
   // A command with no definition (a user's own `## Browser` line) still gets ab, wrapping it as it is.
   const helperText = helperOf(driverDef) ?? (!driverDef && driver?.command ? 'ab() { <command> "$@"; }' : null);
@@ -178,7 +181,7 @@ export function start(run, id, { commit, log = 'evidence.jsonl', session = id, n
     '', steps.length ? `## Resume: your log has ${steps.length} steps (last n ${steps.at(-1).n}). Keep its bugs and spend the rest on what is left: ${leftLine(left(run, id))}` : '## Log: no steps yet.',
   ];
   const render = (cap, bef) => out.map((x) => (x === CAPTURE ? cap : x === BEFORE ? bef : x)).filter((x) => x !== false && x != null && x !== 0 && x !== undefined).join('\n');
-  const cap = `## Capture (your tool's rules; read no other capture file)\n${capture(targetDef, driver, driverDef)}`;
+  const cap = `## Capture (your tool's rules; read no other capture file)\n${capture(targetDef, driver, driverDef, moving)}`;
   const bef = before(run, id, charter.profile);
   const text = render(cap, bef);
   if (text.length <= MAX_OUTPUT) return text;

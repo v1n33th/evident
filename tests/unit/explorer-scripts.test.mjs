@@ -380,3 +380,11 @@ test('a browser command with no definition still gets ab, and its target section
   assert.match(out, /### Connect\n[^]*### Drive\n/);
   assert.doesNotMatch(out, /### mybrowser|Weak spots|- Forms:/);
 });
+
+test('start tells explorers to record each bug\'s retry as video when the environment picks video and the driver records it', () => {
+  const run = makeRun();
+  const env = join(run, '..', '..', '..', 'environment.md');
+  assert.doesNotMatch(start(run, 'T5', { commit: 'abc1234', now: 1793287335000 }), /Record each bug's retry/, 'screenshots only: no video asked');
+  writeFileSync(env, readFileSync(env, 'utf8').replace('- Web: screenshots', '- Web: video, text'));
+  assert.match(start(run, 'T5', { commit: 'abc1234', now: 1793287335000 }), /### Bugs\nRecord each bug's retry \(Bugs step 4\) as `\$B\/repro\.webm`/);
+});

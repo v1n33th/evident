@@ -1104,3 +1104,17 @@ test('a fix run that ends after your answer and still asks has asked again: the 
   assert.match(html, /You decided: <b>make sure it holds<\/b>/);
   assert.doesNotMatch(html, /<fieldset data-line="decide BUG-017 of /);
 });
+
+test('How it happens has no label column, so its steps get the full width', async () => {
+  const { request } = grown(project());
+  const html = pageHtml(await requestData(request));
+  assert.match(html, /<details class="see"><summary>How it happens<\/summary><section class="sec">/);
+  assert.match(html, /\.see \.sec\{grid-template-columns:1fr\}/, 'a section with no h4 would put its content in the 9.5em label column');
+});
+
+test('How it happens and Details look like controls: link colour and an arrow that turns when open', async () => {
+  const { request } = grown(project());
+  const html = pageHtml(await requestData(request));
+  assert.match(html, /details\.see>summary,details\.more>summary\{[^}]*color:var\(--run\)/);
+  assert.match(html, /details\.see\[open\]>summary::before,details\.more\[open\]>summary::before\{transform:rotate\(45deg\)\}/);
+});
